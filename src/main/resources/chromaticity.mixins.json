@@ -3,7 +3,9 @@
 	"package": "net.chromaticity.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"mixins": [
-		"ExampleMixin"
+	],
+	"client": [
+		"screen.VOptionScreenMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

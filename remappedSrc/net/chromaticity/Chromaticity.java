@@ -1,6 +1,8 @@
 package net.chromaticity;
 
 import net.fabricmc.api.ClientModInitializer;
+import net.chromaticity.handler.ScreenHandler;
+import net.chromaticity.service.VulkanModIntegrationService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,8 +23,11 @@ public class Chromaticity implements ClientModInitializer {
 
 		LOGGER.info("Initializing Chromaticity...");
 
-		// VulkanMod integration is now handled directly by the VOptionScreenMixin
-		LOGGER.info("VulkanMod integration configured via mixin");
+		// Initialize VulkanMod integration service
+		VulkanModIntegrationService.initialize();
+
+		// Register screen event handler for button injection
+		ScreenHandler.register();
 
 		LOGGER.info("Chromaticity initialized successfully");
 	}

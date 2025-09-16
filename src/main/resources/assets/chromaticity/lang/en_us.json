@@ -1,0 +1,6 @@
+{
+  "chromaticity.options.shaderpacks.button": "Shader Packs",
+  "chromaticity.options.shaderpacks.enabled": "Shader Packs",
+  "chromaticity.options.shaderpacks.current": "Current Shader Pack",
+  "chromaticity.options.shaderpacks.reload": "Reload Shader Packs"
+}

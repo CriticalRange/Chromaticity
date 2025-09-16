@@ -1,7 +1,9 @@
-# Chromaticity - Minecraft Shader Mod
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-Chromaticity is a Minecraft mod that translates shaderpacks to newer Vulkan GLSL versions, utilizes VulkanMod's shaderc compiler, and injects into VulkanMod's rendering pipeline to create a complete shader pipeline.
+Chromaticity is a Fabric-based Minecraft mod that translates OpenGL shaderpacks to Vulkan GLSL versions and integrates with VulkanMod's rendering pipeline.
 
 ## Core Architecture
 - **Shader Translation**: Convert OpenGL shaderpacks to Vulkan GLSL versions
@@ -16,18 +18,124 @@ Chromaticity is a Minecraft mod that translates shaderpacks to newer Vulkan GLSL
 - Support popular shaderpack formats (OptiFine, Iris, etc.)
 
 ## Build Commands
-- Build: `./gradlew build`
-- Run client: `./gradlew runClient`
-- Run server: `./gradlew runServer`
-- Generate IDE files: `./gradlew genIntellijRuns` (for IntelliJ) or `./gradlew eclipse` (for Eclipse)
+**Windows:**
+```bash
+# Build the mod
+.\gradlew build
+
+# Run Minecraft client with mod
+.\gradlew runClient
+
+# Run Minecraft server with mod
+.\gradlew runServer
+
+# Generate IntelliJ IDEA run configurations
+.\gradlew genIntellijRuns
+
+# Generate Eclipse project files
+.\gradlew eclipse
+
+# Clean build artifacts
+.\gradlew clean
+
+# Test the mod
+.\gradlew test
+```
+
+**Unix/Linux/macOS:**
+```bash
+# Build the mod
+./gradlew build
+
+# Run Minecraft client with mod
+./gradlew runClient
+
+# Run Minecraft server with mod
+./gradlew runServer
+
+# Generate IntelliJ IDEA run configurations
+./gradlew genIntellijRuns
+
+# Generate Eclipse project files
+./gradlew eclipse
+
+# Clean build artifacts
+./gradlew clean
+
+# Test the mod
+./gradlew test
+```
 
 ## Testing
-- Run tests: `./gradlew test`
-- Test shader translation: Convert various OpenGL shaderpacks
-- Test pipeline injection: Verify proper integration with VulkanMod
-- Performance testing: Benchmark translation overhead and rendering performance
+- **Unit Tests**: `./gradlew test` (basic Gradle test setup)
+- **Integration Testing**: Use `./gradlew runClient` for manual testing
+- **Shader Translation Testing**: Convert various OpenGL shaderpacks
+- **Pipeline Injection Testing**: Verify proper integration with VulkanMod
+- **Performance Testing**: Benchmark translation overhead and rendering performance
+- **Development Logs**: Check `run/` directory for crash reports and debug information
 
-## Key Areas
+## Shader Packs Button Implementation
+- **Mixin Target**: VOptionScreen.init() method injection
+- **Implementation**: ✅ COMPLETED - Full working mixin integration with VulkanMod
+- **Current Status**: ✅ Production-ready button successfully integrated
+- **Features**:
+  - Adds "Shader Packs" button positioned to the left of "Support me" button
+  - Dynamically calculates position using reflection to access supportButton field
+  - Uses VulkanMod's native widget system for proper rendering and event handling
+  - Clean integration without console logging or debug output
+  - Graceful error handling with silent fallback
+  - Ready for future shader pack management functionality
+- **Technical Implementation**:
+  - Uses `@Inject(method = "init", at = @At("RETURN"))` to inject after VOptionScreen initialization
+  - Accesses private `supportButton` field via reflection to get positioning
+  - Calculates position: `supportButton.getX() - buttonWidth - spacing`
+  - Adds button to VulkanMod's `buttons` list for proper rendering
+  - No dependency on Minecraft's Screen.addWidget() method (avoids reflection complexity)
+- **Build Configuration**:
+  - ✅ VulkanMod dependency: `modImplementation "maven.modrinth:vulkanmod:0.5.5"`
+  - ✅ Mojang mappings: `mappings loom.officialMojangMappings()`
+  - ✅ Mixin registered in chromaticity.mixins.json under client array
+- **Development Journey**:
+  - **Phase 1**: Started with complex reflection service approach
+  - **Phase 2**: Migrated from Yarn to Mojang mappings for VulkanMod compatibility
+  - **Phase 3**: Switched to mixin approach per user feedback
+  - **Phase 4**: Resolved method signature issues with GuiEventListener
+  - **Phase 5**: Simplified to use only VulkanMod's button system (removed addWidget)
+  - **Phase 6**: Implemented dynamic positioning based on Support Me button
+  - **Phase 7**: Cleaned up logging for production readiness
+
+## Architecture Overview
+**Package Structure:**
+```
+src/main/java/net/chromaticity/
+├── Chromaticity.java              # Main mod entry point
+├── config/
+│   └── option/
+│       └── ChromaticityOptions.java  # Shader configuration management
+├── mixin/
+│   ├── ExampleMixin.java          # Template mixin
+│   └── screen/
+│       └── VOptionScreenMixin.java  # VulkanMod UI integration
+└── service/
+    └── VulkanModIntegrationService.java  # Dynamic VulkanMod integration
+```
+
+**Key Components:**
+- **VulkanModIntegrationService**: Dynamic integration using reflection, no compile-time dependencies
+- **VOptionScreenMixin**: UI injection into VulkanMod's configuration screen
+- **ChromaticityOptions**: Shader pack management (placeholder implementation)
+- **Service Layer Architecture**: Clean separation between UI, business logic, and integration
+
+## Development Environment
+- **Minecraft Version**: 1.21.1
+- **Java Version**: 21 (required)
+- **Fabric Loader**: ≥0.17.2
+- **Fabric API**: 0.116.6+1.21.1
+- **Memory Settings**: Gradle configured with 4GB JVM memory
+- **IDE Support**: IntelliJ (`genIntellijRuns`) and Eclipse (`eclipse`)
+- **Run Directory**: `run/` folder for Minecraft instance and logs
+
+## Key Development Areas
 - Shader translation engine (GLSL to Vulkan GLSL)
 - shaderc compiler integration
 - VulkanMod API integration (from C:\Users\Ahmet\Documents\VulkanMod)
@@ -35,11 +143,11 @@ Chromaticity is a Minecraft mod that translates shaderpacks to newer Vulkan GLSL
 - Resource handling for translated shaders
 - Error handling and fallback mechanisms
 
-## VulkanMod Integration Points
-- Reference VulkanMod source at `C:\Users\Ahmet\Documents\VulkanMod` for:
-  - Shader compilation interfaces and shaderc usage
-  - Vulkan rendering pipeline architecture
-  - Resource management and buffer handling
-  - Command buffer and synchronization patterns
-  - Memory allocation and descriptor management
-  - Swapchain and presentation logic
+## VulkanMod Integration Reference
+Reference VulkanMod source at `C:\Users\Ahmet\Documents\VulkanMod` for:
+- Shader compilation interfaces and shaderc usage
+- Vulkan rendering pipeline architecture
+- Resource management and buffer handling
+- Command buffer and synchronization patterns
+- Memory allocation and descriptor management
+- Swapchain and presentation logic
