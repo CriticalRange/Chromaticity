@@ -112,19 +112,22 @@ src/main/java/net/chromaticity/
 ├── config/
 │   └── option/
 │       └── ChromaticityOptions.java  # Shader configuration management
+├── handler/                       # Event and service handlers
 ├── mixin/
-│   ├── ExampleMixin.java          # Template mixin
 │   └── screen/
-│       └── VOptionScreenMixin.java  # VulkanMod UI integration
-└── service/
-    └── VulkanModIntegrationService.java  # Dynamic VulkanMod integration
+│       └── VOptionScreenMixin.java  # ✅ VulkanMod UI integration (WORKING)
+└── service/                       # Business logic services
 ```
 
 **Key Components:**
-- **VulkanModIntegrationService**: Dynamic integration using reflection, no compile-time dependencies
-- **VOptionScreenMixin**: UI injection into VulkanMod's configuration screen
+- **VOptionScreenMixin**: ✅ Production-ready UI injection into VulkanMod's configuration screen
 - **ChromaticityOptions**: Shader pack management (placeholder implementation)
-- **Service Layer Architecture**: Clean separation between UI, business logic, and integration
+- **Chromaticity.java**: Simplified main entry point with VulkanMod integration via mixin
+- **Clean Architecture**: Removed complex service layer in favor of direct mixin approach
+
+**Removed Components (Development History):**
+- **VulkanModIntegrationService**: Complex reflection service (replaced by mixin)
+- **ExampleMixin**: Template mixin (removed to clean up build warnings)
 
 ## Development Environment
 - **Minecraft Version**: 1.21.1
@@ -151,3 +154,38 @@ Reference VulkanMod source at `C:\Users\Ahmet\Documents\VulkanMod` for:
 - Command buffer and synchronization patterns
 - Memory allocation and descriptor management
 - Swapchain and presentation logic
+
+## Troubleshooting & Common Issues
+
+### Mapping Compatibility Issues
+- **Problem**: ClassNotFoundException for Component, GuiEventListener classes
+- **Solution**: Use Mojang mappings (`loom.officialMojangMappings()`) to match VulkanMod
+- **Migration**: Run `./gradlew migrateMappings --mappings "1.21.1+build.3"`
+
+### Mixin Injection Issues
+- **Problem**: InvalidInjectionException for non-existent methods
+- **Solution**: Only inject into methods that exist in target class (avoid renderWidget)
+- **Best Practice**: Use `@At("RETURN")` for post-initialization injection
+
+### Widget System Integration
+- **Problem**: Buttons created but not visible on screen
+- **Solution**: Add to VulkanMod's `buttons` list, not just Minecraft's widget system
+- **Implementation**: Use reflection to access private `buttons` field
+
+### Reflection Method Signatures
+- **Problem**: NoSuchMethodException for generic methods
+- **Solution**: Use base interface types (GuiEventListener.class) instead of Object.class
+- **Import Path**: `net.minecraft.client.gui.components.events.GuiEventListener`
+
+### Build Configuration
+- **VulkanMod Dependency**: `modImplementation "maven.modrinth:vulkanmod:0.5.5"`
+- **Modrinth Repository**: Required in repositories block for VulkanMod
+- **Mappings**: Must use Mojang mappings for compatibility
+- **Mixin Registration**: Add to `chromaticity.mixins.json` under `client` array
+
+### Development Workflow
+1. **Always test mixin injection first** with simple console output
+2. **Use reflection carefully** - prefer mixin shadows when possible
+3. **Handle exceptions gracefully** - silent fallback for missing dependencies
+4. **Remove debug logging** before production builds
+5. **Test positioning dynamically** using existing UI elements as reference points

@@ -1,5 +1,7 @@
 # gradle
 
+CLAUDE.md
+.claude/
 .gradle/
 build/
 out/
