@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Read(//c/Users/Ahmet/Documents/VulkanMod/**)"
+      "Read(//c/Users/Ahmet/Documents/VulkanMod/**)",
+      "Read(//c/Users/Ahmet/Documents/sodium-extra/**)",
+      "Read(//c/Users/Ahmet/Documents/Iris/**)"
     ],
     "deny": [],
     "ask": []

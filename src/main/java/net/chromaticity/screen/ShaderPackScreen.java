@@ -1,5 +1,11 @@
 package net.chromaticity.screen;
 
+import net.chromaticity.config.ShaderPackConfig;
+import net.chromaticity.shader.ShaderPackManager;
+import net.chromaticity.shader.properties.PropertiesParser;
+import net.chromaticity.shader.properties.ScreenDefinition;
+import net.chromaticity.screen.dynamic.DynamicShaderScreen;
+import net.chromaticity.screen.ShaderPackSettingsScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
@@ -7,11 +13,14 @@ import net.minecraft.network.chat.Component;
 import net.vulkanmod.config.gui.widget.VButtonWidget;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 public class ShaderPackScreen extends Screen {
     private final Screen parent;
@@ -20,6 +29,7 @@ public class ShaderPackScreen extends Screen {
     private ShaderPack selectedShaderPack;
     private ShaderPack appliedShaderPack; // Track which pack is currently applied
     private boolean hasAppliedCurrentSelection = false;
+    private final ShaderPackManager shaderPackManager = new ShaderPackManager();
 
     // VulkanMod Buttons
     private VButtonWidget backButton;
@@ -147,7 +157,7 @@ public class ShaderPackScreen extends Screen {
                 .filter(path -> {
                     String name = path.getFileName().toString().toLowerCase();
                     // Filter out system folders and only include valid shader packs
-                    if (name.startsWith(".") || name.equals("loading_cache")) {
+                    if (name.startsWith(".") || name.equals("chromaticity_cache")) {
                         return false;
                     }
                     return Files.isDirectory(path) || name.endsWith(".zip") || name.endsWith(".rar");
@@ -195,14 +205,55 @@ public class ShaderPackScreen extends Screen {
 
     private void openShaderPackSettings() {
         if (this.selectedShaderPack != null && !this.selectedShaderPack.isNone()) {
-            // TODO: Open shader pack settings screen
+            try {
+                // First try the new shader option system
+                String packName = this.selectedShaderPack.getName();
+
+                // Remove .zip extension if present for pack name
+                if (packName.endsWith(".zip")) {
+                    packName = packName.substring(0, packName.length() - 4);
+                }
+
+                ShaderPackManager.ShaderPackInfo packInfo = shaderPackManager.prepareShaderPackForSettings(packName);
+
+                if (packInfo != null && !packInfo.getOptionSet().isEmpty()) {
+                    // Use new option-based settings screen
+                    ShaderPackSettingsScreen settingsScreen = new ShaderPackSettingsScreen(this, packInfo, shaderPackManager);
+                    this.minecraft.setScreen(settingsScreen);
+                    return;
+                }
+
+                // Fallback to old properties-based system
+                PropertiesParser.ShaderPackDefinition definition = this.selectedShaderPack.loadProperties();
+                if (definition != null) {
+                    ShaderPackConfig config = new ShaderPackConfig(this.selectedShaderPack.getName());
+                    ScreenDefinition rootScreen = definition.getRootScreen();
+                    DynamicShaderScreen settingsScreen = new DynamicShaderScreen(this, rootScreen, config);
+                    this.minecraft.setScreen(settingsScreen);
+                } else {
+                    // No settings available
+                    System.out.println("No shader settings found for pack: " + this.selectedShaderPack.getName());
+                }
+            } catch (Exception e) {
+                System.err.println("Failed to load shader pack settings: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
     }
 
     private void applySelectedShaderPack() {
         if (this.selectedShaderPack != null) {
-            // TODO: Apply the selected shader pack
-            System.out.println("Chromaticity: Applying shader pack: " + this.selectedShaderPack.getName());
+            String packName = this.selectedShaderPack.getName();
+
+            // Remove .zip extension if present for pack name
+            if (packName.endsWith(".zip")) {
+                packName = packName.substring(0, packName.length() - 4);
+            }
+
+            System.out.println("Chromaticity: Applying shader pack: " + packName);
+
+            // Process the shader pack (creates compiled/ folder and triggers compilation)
+            shaderPackManager.processShaderPack(packName);
 
             // Update the applied shader pack
             this.appliedShaderPack = this.selectedShaderPack;
@@ -237,6 +288,7 @@ public class ShaderPackScreen extends Screen {
     public static class ShaderPack {
         private final String name;
         private final File file;
+        private PropertiesParser.ShaderPackDefinition cachedDefinition;
 
         public ShaderPack(String name, File file) {
             this.name = name;
@@ -253,6 +305,75 @@ public class ShaderPackScreen extends Screen {
 
         public boolean isNone() {
             return this.file == null;
+        }
+
+        public boolean hasProperties() {
+            if (isNone()) return false;
+
+            try {
+                Path propertiesPath = findPropertiesFile();
+                return propertiesPath != null && Files.exists(propertiesPath);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        public PropertiesParser.ShaderPackDefinition loadProperties() throws IOException {
+            if (isNone()) return null;
+
+            if (cachedDefinition != null) {
+                return cachedDefinition;
+            }
+
+            Path propertiesPath = findPropertiesFile();
+            if (propertiesPath == null) {
+                return null;
+            }
+
+            PropertiesParser parser = new PropertiesParser();
+            cachedDefinition = parser.parseProperties(propertiesPath);
+            return cachedDefinition;
+        }
+
+        private Path findPropertiesFile() throws IOException {
+            if (isNone()) return null;
+
+            if (file.isDirectory()) {
+                // Directory-based shader pack
+                Path shadersDir = file.toPath().resolve("shaders");
+                Path propertiesFile = shadersDir.resolve("shaders.properties");
+
+                if (Files.exists(propertiesFile)) {
+                    return propertiesFile;
+                }
+            } else if (file.getName().toLowerCase().endsWith(".zip")) {
+                // ZIP-based shader pack - extract properties to temp file
+                return extractPropertiesFromZip();
+            }
+
+            return null;
+        }
+
+        private Path extractPropertiesFromZip() throws IOException {
+            try (ZipFile zipFile = new ZipFile(file)) {
+                ZipEntry propertiesEntry = zipFile.getEntry("shaders/shaders.properties");
+                if (propertiesEntry == null) {
+                    return null;
+                }
+
+                // Create temp file for extracted properties
+                Path tempFile = Files.createTempFile("chromaticity_" + name + "_", ".properties");
+                tempFile.toFile().deleteOnExit();
+
+                Files.copy(zipFile.getInputStream(propertiesEntry), tempFile,
+                          java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+                return tempFile;
+            }
+        }
+
+        public void clearCache() {
+            cachedDefinition = null;
         }
     }
 }
