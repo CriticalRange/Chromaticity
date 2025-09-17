@@ -99,19 +99,20 @@ public class ShaderTranslationService {
 
         LOGGER.debug("Starting shader translation from {} to {}", originalDir, compiledDir);
 
-        // Find all shader files first for logging
+        // Find all shader files and include files
         List<Path> shaderFiles;
+        List<Path> includeFiles;
         try (Stream<Path> paths = Files.walk(originalDir)) {
-            shaderFiles = paths
-                .filter(Files::isRegularFile)
-                .filter(this::isShaderFile)
-                .collect(Collectors.toList());
+            List<Path> allFiles = paths.filter(Files::isRegularFile).collect(Collectors.toList());
+            shaderFiles = allFiles.stream().filter(this::isShaderFile).collect(Collectors.toList());
+            includeFiles = allFiles.stream().filter(this::isIncludeFile).collect(Collectors.toList());
         }
 
-        LOGGER.info("Found {} shader files to translate in directory: {}", shaderFiles.size(), originalDir);
+        LOGGER.info("Found {} shader files and {} include files to process in directory: {}",
+            shaderFiles.size(), includeFiles.size(), originalDir);
 
-        if (shaderFiles.isEmpty()) {
-            LOGGER.warn("No shader files found in directory: {}", originalDir);
+        if (shaderFiles.isEmpty() && includeFiles.isEmpty()) {
+            LOGGER.warn("No shader or include files found in directory: {}", originalDir);
             // List all files for debugging
             try (Stream<Path> paths = Files.walk(originalDir)) {
                 List<Path> allFiles = paths.filter(Files::isRegularFile).collect(Collectors.toList());
@@ -121,7 +122,7 @@ public class ShaderTranslationService {
             return;
         }
 
-        // Process each shader file
+        // Process main shader files first
         int processedCount = 0;
         for (Path shaderFile : shaderFiles) {
             try {
@@ -146,12 +147,37 @@ public class ShaderTranslationService {
             }
         }
 
-        LOGGER.info("Completed translation of shader directory: {} ({}/{} files processed)",
-            originalDir, processedCount, shaderFiles.size());
+        // Process include files (minimal processing - mostly copy with basic compatibility fixes)
+        for (Path includeFile : includeFiles) {
+            try {
+                // Determine relative path
+                Path relativePath = originalDir.relativize(includeFile);
+                Path outputFile = compiledDir.resolve(relativePath);
+
+                // Ensure parent directories exist
+                Files.createDirectories(outputFile.getParent());
+
+                // Apply minimal processing to include files
+                String processedSource = processIncludeFile(includeFile);
+                Files.writeString(outputFile, processedSource);
+
+                processedCount++;
+                LOGGER.debug("Processed include file [{}/{}]: {} -> {}",
+                    processedCount, shaderFiles.size() + includeFiles.size(),
+                    includeFile.getFileName(), outputFile.getFileName());
+
+            } catch (IOException e) {
+                LOGGER.error("Failed to process include file: {}", includeFile, e);
+            }
+        }
+
+        LOGGER.info("Completed translation of shader directory: {} ({}/{} files processed - {} shaders, {} includes)",
+            originalDir, processedCount, shaderFiles.size() + includeFiles.size(), shaderFiles.size(), includeFiles.size());
     }
 
     /**
-     * Checks if a file is a shader file based on its extension.
+     * Checks if a file is a main shader file that needs full GLSL 450 transformation.
+     * Include files (.glsl) are processed separately.
      */
     private boolean isShaderFile(Path file) {
         String fileName = file.getFileName().toString().toLowerCase();
@@ -160,10 +186,101 @@ public class ShaderTranslationService {
                fileName.endsWith(".gsh") ||
                fileName.endsWith(".tcs") ||
                fileName.endsWith(".tes") ||
-               fileName.endsWith(".glsl") ||
                fileName.endsWith(".vert") ||
                fileName.endsWith(".frag") ||
                fileName.endsWith(".geom");
+    }
+
+    /**
+     * Checks if a file is an include file that needs minimal processing.
+     */
+    private boolean isIncludeFile(Path file) {
+        String fileName = file.getFileName().toString().toLowerCase();
+        String pathStr = file.toString().replace('\\', '/');
+
+        // .glsl files are typically include files
+        if (fileName.endsWith(".glsl")) {
+            return true;
+        }
+
+        // Files in lib/ or include/ directories are include files
+        return pathStr.contains("/lib/") || pathStr.contains("/include/") ||
+               pathStr.contains("\\lib\\") || pathStr.contains("\\include\\");
+    }
+
+    /**
+     * Processes an include file with minimal transformations.
+     * Unlike main shader files, include files don't get GLSL 450 headers or output declarations.
+     */
+    private String processIncludeFile(Path includeFile) throws IOException {
+        String originalSource = Files.readString(includeFile);
+        String result = originalSource;
+
+        // Basic syntax fixes for include files
+        result = fixBasicSyntax(result);
+
+        // Apply minimal compatibility transformations (but not full GLSL 450 transformation)
+        result = applyMinimalCompatibilityFixes(result);
+
+        return result;
+    }
+
+    /**
+     * Fixes basic syntax issues that might prevent compilation.
+     */
+    private String fixBasicSyntax(String source) {
+        // Fix common syntax issues
+        String result = source;
+
+        // Ensure comments are properly closed
+        result = fixUnclosedComments(result);
+
+        return result;
+    }
+
+    /**
+     * Fixes unclosed block comments.
+     */
+    private String fixUnclosedComments(String source) {
+        String result = source;
+
+        // Count opening and closing comment markers
+        long openComments = result.chars().filter(ch -> ch == '/').count();
+        if (openComments > 0 && result.contains("/*") && !result.contains("*/")) {
+            // Add missing closing comment marker at the end
+            result = result + "\n*/";
+        }
+
+        return result;
+    }
+
+    /**
+     * Applies minimal compatibility fixes for include files.
+     */
+    private String applyMinimalCompatibilityFixes(String source) {
+        String result = source;
+
+        // Only apply basic variable transformations, no GLSL 450 additions
+        result = replaceBuiltInVariables(result, null); // No shader type context for includes
+
+        return result;
+    }
+
+    /**
+     * Replaces built-in variables with modern equivalents, but only basic ones for include files.
+     */
+    private String replaceBuiltInVariables(String source, ShaderType shaderType) {
+        String result = source;
+
+        // For include files, we need to be more careful about gl_Position
+        // The discard.glsl file has gl_Position in what's meant to be fragment shader code
+        // Replace problematic gl_Position assignments that don't make sense in fragment context
+        if (result.contains("gl_Position") && result.contains("discard")) {
+            // This looks like fragment shader code with invalid gl_Position usage
+            result = result.replaceAll("gl_Position\\s*=\\s*vec4\\(-1\\.0\\);?", "// gl_Position removed - invalid in fragment shader");
+        }
+
+        return result;
     }
 
     /**

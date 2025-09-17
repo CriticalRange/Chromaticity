@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 /**
  * Service that orchestrates the complete shader compilation pipeline:
  * GLSL Source → Preprocessing → SPIR-V Compilation → Caching
+ * Uses DirectShaderCompiler with LWJGL shaderc for file system include support.
  */
 public class ShaderCompilationService {
     private static final Logger LOGGER = LoggerFactory.getLogger(ShaderCompilationService.class);
@@ -34,7 +35,7 @@ public class ShaderCompilationService {
         private final String shaderpackName;
         private final Path updatedDir;
         private final Path compiledDir;
-        private final Map<String, ChromaticityShaderCompiler.CompilationResult> compiledShaders;
+        private final Map<String, DirectShaderCompiler.CompilationResult> compiledShaders;
         private final long startTime;
 
         public CompilationSession(String shaderpackName, Path updatedDir, Path compiledDir) {
@@ -48,7 +49,7 @@ public class ShaderCompilationService {
         public String getShaderpackName() { return shaderpackName; }
         public Path getUpdatedDir() { return updatedDir; }
         public Path getCompiledDir() { return compiledDir; }
-        public Map<String, ChromaticityShaderCompiler.CompilationResult> getCompiledShaders() { return compiledShaders; }
+        public Map<String, DirectShaderCompiler.CompilationResult> getCompiledShaders() { return compiledShaders; }
         public long getStartTime() { return startTime; }
         public long getDuration() { return System.currentTimeMillis() - startTime; }
         public int getShaderCount() { return compiledShaders.size(); }
@@ -63,9 +64,8 @@ public class ShaderCompilationService {
      * @return CompilationSession containing compilation results and statistics
      */
     public CompilationSession compileShaderpackToSpirv(String shaderpackName, Path updatedDir, Path compiledDir) {
-        if (!ChromaticityShaderCompiler.isAvailable()) {
-            throw new UnsupportedOperationException("VulkanMod SPIR-V compilation not available");
-        }
+        // DirectShaderCompiler is always available as it uses LWJGL shaderc directly
+        LOGGER.debug("Using DirectShaderCompiler: {}", DirectShaderCompiler.getStats());
 
         LOGGER.info("Starting SPIR-V compilation for shaderpack: {}", shaderpackName);
 
@@ -77,7 +77,7 @@ public class ShaderCompilationService {
             Files.createDirectories(compiledDir);
 
             // Configure include paths for this shaderpack
-            ChromaticityShaderCompiler.configureShaderpackIncludes(shaderpackName, updatedDir.getParent());
+            configureDirectShaderCompilerIncludes(shaderpackName, updatedDir.getParent());
 
             // Find all preprocessed shader files
             List<Path> shaderFiles = findShaderFiles(updatedDir);
@@ -122,8 +122,8 @@ public class ShaderCompilationService {
                     Files.createDirectories(spirvOutputPath.getParent());
 
                     // Compile to SPIR-V with additional safety checks
-                    ChromaticityShaderCompiler.CompilationResult result =
-                        ChromaticityShaderCompiler.compileShaderFile(shaderFile);
+                    DirectShaderCompiler.CompilationResult result =
+                        DirectShaderCompiler.compileShaderFile(shaderFile);
 
                     // Store compilation result
                     session.getCompiledShaders().put(relativePath.toString(), result);
@@ -184,15 +184,14 @@ public class ShaderCompilationService {
      * @param shaderPath Path to the preprocessed shader file
      * @return CompilationResult containing SPIR-V bytecode and metadata
      */
-    public ChromaticityShaderCompiler.CompilationResult compileSingleShader(String shaderpackName, Path shaderPath) {
-        if (!ChromaticityShaderCompiler.isAvailable()) {
-            throw new UnsupportedOperationException("VulkanMod SPIR-V compilation not available");
-        }
-
-        LOGGER.debug("Compiling single shader to SPIR-V: {}", shaderPath);
+    public DirectShaderCompiler.CompilationResult compileSingleShader(String shaderpackName, Path shaderPath) {
+        LOGGER.debug("Compiling single shader to SPIR-V using DirectShaderCompiler: {}", shaderPath);
 
         try {
-            return ChromaticityShaderCompiler.compileShaderFile(shaderPath);
+            // Configure include paths for this specific shader compilation
+            configureDirectShaderCompilerIncludes(shaderpackName, shaderPath.getParent().getParent());
+
+            return DirectShaderCompiler.compileShaderFile(shaderPath);
 
         } catch (Exception e) {
             String errorMsg = String.format("Failed to compile shader '%s' for pack '%s'",
@@ -243,8 +242,35 @@ public class ShaderCompilationService {
         return new CompilationStatistics(
             activeSessions.size(),
             activeSessions.values().stream().mapToInt(CompilationSession::getShaderCount).sum(),
-            ChromaticityShaderCompiler.getStats()
+            DirectShaderCompiler.getStats()
         );
+    }
+
+    /**
+     * Configures include paths for DirectShaderCompiler for a specific shaderpack.
+     *
+     * @param shaderpackName The name of the shaderpack
+     * @param shaderpackBasePath The base path to the shaderpack directory
+     */
+    private void configureDirectShaderCompilerIncludes(String shaderpackName, Path shaderpackBasePath) {
+        // Clear previous include paths
+        DirectShaderCompiler.clearIncludePaths();
+
+        // Add standard shaderpack include paths
+        DirectShaderCompiler.addIncludePath(shaderpackBasePath);
+        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders"));
+        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders").resolve("lib"));
+        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders").resolve("include"));
+
+        // Add updated/processed shaders directory
+        Path updatedShadersPath = shaderpackBasePath.resolve("updated").resolve("shaders");
+        if (Files.exists(updatedShadersPath)) {
+            DirectShaderCompiler.addIncludePath(updatedShadersPath);
+            DirectShaderCompiler.addIncludePath(updatedShadersPath.resolve("lib"));
+            DirectShaderCompiler.addIncludePath(updatedShadersPath.resolve("include"));
+        }
+
+        LOGGER.info("Configured DirectShaderCompiler include paths for shaderpack: {}", shaderpackName);
     }
 
     /**
@@ -327,24 +353,15 @@ public class ShaderCompilationService {
     }
 
     /**
-     * Saves a placeholder file indicating successful SPIR-V compilation.
-     * In a full implementation, this would extract and save the actual SPIR-V bytecode.
+     * Saves the actual SPIR-V bytecode to disk.
+     * DirectShaderCompiler provides actual bytecode, not just a reference.
      */
-    private void saveSpirvPlaceholder(Path outputPath, ChromaticityShaderCompiler.CompilationResult result) throws IOException {
-        String placeholder = String.format(
-            "# SPIR-V Bytecode Placeholder\n" +
-            "# Shader: %s\n" +
-            "# Stage: %s\n" +
-            "# Compiled: %s\n" +
-            "# From Cache: %s\n" +
-            "# Compilation successful - SPIR-V bytecode available in memory\n",
-            result.getShaderName(),
-            result.getStage(),
-            new Date(),
-            result.isFromCache()
-        );
+    private void saveSpirvPlaceholder(Path outputPath, DirectShaderCompiler.CompilationResult result) throws IOException {
+        // Save actual SPIR-V bytecode
+        byte[] spirvBytecode = result.getSpirvBytecode();
+        Files.write(outputPath, spirvBytecode);
 
-        Files.writeString(outputPath, placeholder);
+        LOGGER.debug("Saved SPIR-V bytecode to: {} ({} bytes)", outputPath, spirvBytecode.length);
     }
 
     /**
@@ -359,7 +376,7 @@ public class ShaderCompilationService {
             report.put("timestamp", new Date().toInstant().toString());
             report.put("duration", session.getDuration());
             report.put("shaderCount", session.getShaderCount());
-            report.put("vulkanModAvailable", ChromaticityShaderCompiler.isAvailable());
+            report.put("directShaderCompilerAvailable", DirectShaderCompiler.getStats().isAvailable());
 
             // Compilation results
             Map<String, Map<String, Object>> shaderResults = new HashMap<>();
@@ -388,10 +405,10 @@ public class ShaderCompilationService {
     public static class CompilationStatistics {
         private final int activeSessions;
         private final int totalCompiledShaders;
-        private final ChromaticityShaderCompiler.CompilationStats compilerStats;
+        private final DirectShaderCompiler.CompilationStats compilerStats;
 
         public CompilationStatistics(int activeSessions, int totalCompiledShaders,
-                                   ChromaticityShaderCompiler.CompilationStats compilerStats) {
+                                   DirectShaderCompiler.CompilationStats compilerStats) {
             this.activeSessions = activeSessions;
             this.totalCompiledShaders = totalCompiledShaders;
             this.compilerStats = compilerStats;
@@ -399,7 +416,7 @@ public class ShaderCompilationService {
 
         public int getActiveSessions() { return activeSessions; }
         public int getTotalCompiledShaders() { return totalCompiledShaders; }
-        public ChromaticityShaderCompiler.CompilationStats getCompilerStats() { return compilerStats; }
+        public DirectShaderCompiler.CompilationStats getCompilerStats() { return compilerStats; }
 
         @Override
         public String toString() {

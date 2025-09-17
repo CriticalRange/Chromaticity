@@ -127,7 +127,10 @@ public class GlslVersionTranslator {
         // Step 7: Transform texture functions
         transformTextureFunctions(lines);
 
-        // Step 8: Apply VulkanMod-specific binding conventions
+        // Step 8: Fix Vulkan GLSL compliance issues
+        fixVulkanCompliance(lines, shaderType);
+
+        // Step 9: Apply VulkanMod-specific binding conventions
         String intermediateResult = String.join("\n", lines);
         VulkanModIntegration.VulkanBindingAnalysis bindingAnalysis =
             VulkanModIntegration.analyzeShaderBindings(intermediateResult, shaderType);
@@ -413,6 +416,102 @@ public class GlslVersionTranslator {
 
             // Default to fragment for unknown types
             return FRAGMENT;
+        }
+    }
+
+    /**
+     * Fixes Vulkan GLSL compliance issues.
+     */
+    private static void fixVulkanCompliance(List<String> lines, ShaderType shaderType) {
+        // Fix 1: Convert loose uniforms to uniform blocks
+        convertLooseUniformsToBlocks(lines);
+
+        // Fix 2: Remove duplicate layout location assignments
+        fixDuplicateLayoutLocations(lines);
+
+        // Fix 3: Fix binding qualifier syntax for Vulkan
+        fixBindingQualifiers(lines);
+    }
+
+    /**
+     * Converts loose uniforms with binding qualifiers to proper uniform blocks.
+     */
+    private static void convertLooseUniformsToBlocks(List<String> lines) {
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).trim();
+
+            // Look for loose uniforms with binding qualifiers
+            if (line.matches("layout\\s*\\(\\s*binding\\s*=\\s*\\d+\\s*\\)\\s+uniform\\s+\\w+\\s+\\w+\\s*;")) {
+                // Extract binding number and uniform declaration
+                String bindingMatch = line.replaceAll(".*binding\\s*=\\s*(\\d+).*", "$1");
+                String typeMatch = line.replaceAll(".*uniform\\s+(\\w+)\\s+(\\w+)\\s*;", "$1");
+                String nameMatch = line.replaceAll(".*uniform\\s+\\w+\\s+(\\w+)\\s*;", "$1");
+
+                // Replace with uniform block
+                lines.set(i, String.format("layout(binding = %s, std140) uniform %sBlock {", bindingMatch, nameMatch));
+                lines.add(i + 1, String.format("    %s %s;", typeMatch, nameMatch));
+                lines.add(i + 2, "};");
+
+                // Skip the added lines
+                i += 2;
+            }
+        }
+    }
+
+    /**
+     * Fixes duplicate layout location assignments.
+     */
+    private static void fixDuplicateLayoutLocations(List<String> lines) {
+        Set<Integer> usedLocations = new HashSet<>();
+        int nextLocation = 0;
+
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).trim();
+
+            // Look for layout location assignments
+            if (line.matches(".*layout\\s*\\(\\s*location\\s*=\\s*\\d+\\s*\\).*")) {
+                String locationStr = line.replaceAll(".*location\\s*=\\s*(\\d+).*", "$1");
+                try {
+                    int location = Integer.parseInt(locationStr);
+
+                    if (usedLocations.contains(location)) {
+                        // Find next available location
+                        while (usedLocations.contains(nextLocation)) {
+                            nextLocation++;
+                        }
+
+                        // Replace with available location
+                        String newLine = line.replaceAll("location\\s*=\\s*\\d+", "location = " + nextLocation);
+                        lines.set(i, newLine);
+                        usedLocations.add(nextLocation);
+                        nextLocation++;
+                    } else {
+                        usedLocations.add(location);
+                        nextLocation = Math.max(nextLocation, location + 1);
+                    }
+                } catch (NumberFormatException e) {
+                    // Skip invalid location numbers
+                }
+            }
+        }
+    }
+
+    /**
+     * Fixes binding qualifier syntax for Vulkan compatibility.
+     */
+    private static void fixBindingQualifiers(List<String> lines) {
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+
+            // Fix binding qualifiers that aren't on appropriate types
+            if (line.contains("layout") && line.contains("binding") &&
+                !line.contains("uniform") && !line.contains("sampler") &&
+                !line.contains("image") && !line.contains("atomic")) {
+
+                // Remove binding qualifier from inappropriate types
+                String fixedLine = line.replaceAll("layout\\s*\\([^)]*binding[^)]*\\)\\s*", "");
+                lines.set(i, fixedLine);
+            }
         }
     }
 }

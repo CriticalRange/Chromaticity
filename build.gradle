@@ -35,6 +35,15 @@ dependencies {
 	// VulkanMod dependency for shader integration
 	modImplementation "maven.modrinth:vulkanmod:0.5.5"
 
+	// VulkanMod already provides LWJGL core and vulkan, we only need shaderc
+	// Use matching LWJGL version to avoid conflicts (VulkanMod uses 3.3.3-snapshot)
+	modImplementation("org.lwjgl:lwjgl-shaderc:3.3.3") {
+		exclude group: 'org.lwjgl', module: 'lwjgl'
+		exclude group: 'org.lwjgl', module: 'lwjgl-vulkan'
+	}
+	// Native libraries for the platform
+	runtimeOnly "org.lwjgl:lwjgl-shaderc:3.3.3:natives-windows"
+
 	// Test dependencies
 	testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.0"
 	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.10.0"
