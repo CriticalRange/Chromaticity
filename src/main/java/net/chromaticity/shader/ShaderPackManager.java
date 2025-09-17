@@ -9,6 +9,7 @@ import net.chromaticity.shader.parser.ShaderOptionParser;
 import net.chromaticity.shader.preprocessing.ShaderTranslationService;
 import net.chromaticity.shader.preprocessing.VulkanModIntegration;
 import net.chromaticity.shader.preprocessing.ShaderChangeTracker;
+import net.chromaticity.shader.compilation.ShaderCompilationService;
 import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,7 @@ public class ShaderPackManager {
     private final Map<String, ShaderPackInfo> loadedPacks = new ConcurrentHashMap<>();
     private final ShaderOptionParser optionParser = new ShaderOptionParser();
     private final ShaderTranslationService translationService = new ShaderTranslationService();
+    private final ShaderCompilationService compilationService = new ShaderCompilationService(translationService);
 
     public ShaderPackManager() {
         this.shaderpacksDirectory = getShaderpacksDirectory();
@@ -456,13 +458,48 @@ public class ShaderPackManager {
             // Phase 2: Generate change tracking report
             generateChangeReport(packName, originalDir, updatedDir, packCacheDir);
 
-            // Phase 3: Add VulkanMod include paths for compilation
-            addVulkanModIncludePaths(packName, compiledDir);
+            // Phase 3: SPIR-V Compilation (GLSL 450 core → SPIR-V bytecode)
+            Path spirvDir = packCacheDir.resolve("spir-v");
+            Files.createDirectories(spirvDir);
+            compileToSpirv(packName, updatedShadersDir, spirvDir);
+
+            // Phase 4: Add VulkanMod include paths for runtime integration
+            addVulkanModIncludePaths(packName, spirvDir);
 
             LOGGER.info("Successfully processed shader pack: {}", packName);
 
         } catch (IOException e) {
             LOGGER.error("Failed to process shader pack: {}", packName, e);
+        }
+    }
+
+    /**
+     * Compiles preprocessed GLSL 450 core shaders to SPIR-V bytecode.
+     */
+    private void compileToSpirv(String packName, Path updatedShadersDir, Path spirvDir) {
+        try {
+            LOGGER.info("Starting SPIR-V compilation for shader pack: {}", packName);
+
+            // Use the compilation service to compile all preprocessed shaders
+            ShaderCompilationService.CompilationSession session = compilationService.compileShaderpackToSpirv(
+                packName, updatedShadersDir, spirvDir
+            );
+
+            // Log compilation results
+            LOGGER.info("SPIR-V compilation completed for '{}': {} shaders compiled in {}ms",
+                packName, session.getShaderCount(), session.getDuration());
+
+            // Generate compilation statistics
+            ShaderCompilationService.CompilationStatistics stats = compilationService.getCompilationStatistics();
+            LOGGER.debug("Compilation statistics: {}", stats);
+
+        } catch (UnsupportedOperationException e) {
+            LOGGER.warn("SPIR-V compilation not available (VulkanMod not found): {}", e.getMessage());
+            LOGGER.info("Shader pack '{}' preprocessed but not compiled - SPIR-V compilation requires VulkanMod", packName);
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to compile shader pack '{}' to SPIR-V", packName, e);
+            throw new RuntimeException("SPIR-V compilation failed for: " + packName, e);
         }
     }
 
@@ -648,6 +685,10 @@ public class ShaderPackManager {
 
         public Path getUpdatedDirectory() {
             return cacheDirectory.resolve("updated");
+        }
+
+        public Path getSpirvDirectory() {
+            return cacheDirectory.resolve("spir-v");
         }
 
         public ShaderOptionSet getOptionSet() {

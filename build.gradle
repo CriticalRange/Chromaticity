@@ -34,6 +34,10 @@ dependencies {
 
 	// VulkanMod dependency for shader integration
 	modImplementation "maven.modrinth:vulkanmod:0.5.5"
+
+	// Test dependencies
+	testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.0"
+	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.10.0"
 }
 
 processResources {
@@ -46,6 +50,10 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 21
+}
+
+test {
+	useJUnitPlatform()
 }
 
 java {
