@@ -29,7 +29,7 @@ import java.util.zip.ZipFile;
 
 /**
  * Manages shader pack discovery, extraction, and caching.
- * Handles the simplified cache structure with original/, compiled/, and current_settings.json.
+ * Handles the cache structure with original/, updated/, spir-v/, and shaderpack_settings.json.
  */
 public class ShaderPackManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(ShaderPackManager.class);
@@ -133,7 +133,7 @@ public class ShaderPackManager {
             // Ensure cache directories exist
             Files.createDirectories(packCacheDir);
             Files.createDirectories(packCacheDir.resolve("original"));
-            // Note: compiled/ and updated/ folders will be created later during apply/processing
+            // Note: updated/ and spir-v/ folders will be created later during apply/processing
 
             LOGGER.debug("Created cache directories for pack: {}", packName);
 
@@ -171,7 +171,6 @@ public class ShaderPackManager {
             ShaderPackInfo info = new ShaderPackInfo(packName, packCacheDir, optionSet, settings);
             loadedPacks.put(packName, info);
 
-            LOGGER.info("Prepared shader pack for settings: {}", packName);
             return info;
 
         } catch (IOException e) {
@@ -296,7 +295,6 @@ public class ShaderPackManager {
             extractZipPack(sourcePath, targetDir);
         }
 
-        LOGGER.info("Extracted shader pack to: {}", targetDir);
     }
 
     /**
@@ -323,16 +321,30 @@ public class ShaderPackManager {
 
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
-                if (entry.isDirectory()) {
-                    continue;
-                }
-
                 Path entryPath = targetDir.resolve(entry.getName());
-                Files.createDirectories(entryPath.getParent());
 
-                try (InputStream in = zipFile.getInputStream(entry);
-                     OutputStream out = Files.newOutputStream(entryPath)) {
-                    in.transferTo(out);
+                // Check if this is a directory entry (either marked as directory or name ends with /)
+                if (entry.isDirectory() || entry.getName().endsWith("/")) {
+                    // Create directory
+                    Files.createDirectories(entryPath);
+                } else {
+                    // Create parent directories if needed
+                    Path parentDir = entryPath.getParent();
+                    if (parentDir != null && !Files.exists(parentDir)) {
+                        Files.createDirectories(parentDir);
+                    }
+
+                    // Extract file (skip if it's size 0 and looks like a directory)
+                    if (entry.getSize() == 0 && !entry.getName().contains(".")) {
+                        // This might be a directory masquerading as a file, create as directory
+                        Files.createDirectories(entryPath);
+                    } else {
+                        // Extract as regular file
+                        try (InputStream in = zipFile.getInputStream(entry);
+                             OutputStream out = Files.newOutputStream(entryPath)) {
+                            in.transferTo(out);
+                        }
+                    }
                 }
             }
         }
@@ -377,7 +389,6 @@ public class ShaderPackManager {
         ShaderPackInfo packInfo = loadedPacks.get(packName);
         if (packInfo == null) {
             LOGGER.warn("Cannot apply settings to unknown pack: {}", packName);
-            return;
         }
 
         // Update settings in memory
@@ -389,12 +400,11 @@ public class ShaderPackManager {
         // Save to cache
         saveSettingsToCache(packName, packInfo.getSettings());
 
-        LOGGER.info("Applied settings changes to pack: {}", packName);
     }
 
     /**
      * Processes/applies a shader pack (when user clicks Apply button).
-     * Creates compiled/ folder and triggers shader compilation.
+     * Creates updated/ and spir-v/ folders and triggers shader compilation.
      */
     public void processShaderPack(String packName) {
         try {
@@ -411,22 +421,17 @@ public class ShaderPackManager {
                     List<String> availablePacks = discoverShaderPacks();
                     LOGGER.debug("Available shader packs: {}", availablePacks);
 
-                    return;
                 }
 
-                LOGGER.info("Successfully prepared shader pack '{}' for processing", packName);
             }
 
             Path packCacheDir = cacheDirectory.resolve(packName);
             Path originalDir = packCacheDir.resolve("original");
             Path updatedDir = packCacheDir.resolve("updated");
-            Path compiledDir = packCacheDir.resolve("compiled");
 
             // Create processing directories if they don't exist
             Files.createDirectories(updatedDir);
-            Files.createDirectories(compiledDir);
 
-            LOGGER.info("Processing shader pack: {}", packName);
 
             // Phase 1: Shader preprocessing and translation
             ShaderOptionValues currentSettings = packInfo.getSettings();
@@ -452,9 +457,6 @@ public class ShaderPackManager {
             // Copy non-shader files (textures, properties, etc.) to updated/ maintaining structure
             copyNonShaderFiles(originalDir, updatedDir);
 
-            // Copy everything from updated/ to compiled/ for actual compilation
-            copyDirectory(updatedDir, compiledDir);
-
             // Phase 2: Generate change tracking report
             generateChangeReport(packName, originalDir, updatedDir, packCacheDir);
 
@@ -464,9 +466,8 @@ public class ShaderPackManager {
             compileToSpirv(packName, updatedShadersDir, spirvDir);
 
             // Phase 4: Add VulkanMod include paths for runtime integration
-            addVulkanModIncludePaths(packName, spirvDir);
+            addVulkanModIncludePaths(packName, updatedDir);
 
-            LOGGER.info("Successfully processed shader pack: {}", packName);
 
         } catch (IOException e) {
             LOGGER.error("Failed to process shader pack: {}", packName, e);
@@ -478,7 +479,6 @@ public class ShaderPackManager {
      */
     private void compileToSpirv(String packName, Path updatedShadersDir, Path spirvDir) {
         try {
-            LOGGER.info("Starting SPIR-V compilation for shader pack: {}", packName);
 
             // Use the compilation service to compile all preprocessed shaders
             ShaderCompilationService.CompilationSession session = compilationService.compileShaderpackToSpirv(
@@ -486,8 +486,6 @@ public class ShaderPackManager {
             );
 
             // Log compilation results
-            LOGGER.info("SPIR-V compilation completed for '{}': {} shaders compiled in {}ms",
-                packName, session.getShaderCount(), session.getDuration());
 
             // Generate compilation statistics
             ShaderCompilationService.CompilationStatistics stats = compilationService.getCompilationStatistics();
@@ -495,7 +493,6 @@ public class ShaderPackManager {
 
         } catch (UnsupportedOperationException e) {
             LOGGER.warn("SPIR-V compilation not available (VulkanMod not found): {}", e.getMessage());
-            LOGGER.info("Shader pack '{}' preprocessed but not compiled - SPIR-V compilation requires VulkanMod", packName);
 
         } catch (Exception e) {
             LOGGER.error("Failed to compile shader pack '{}' to SPIR-V", packName, e);
@@ -552,8 +549,6 @@ public class ShaderPackManager {
             // Save the report to cache directory
             ShaderChangeTracker.saveChangeReport(report, cacheDir);
 
-            LOGGER.info("Generated preprocessing report for '{}': {}/{} files modified",
-                packName, report.getModifiedFiles(), report.getTotalFiles());
 
         } catch (Exception e) {
             LOGGER.error("Failed to generate change report for pack: {}", packName, e);
@@ -614,12 +609,10 @@ public class ShaderPackManager {
         try {
             if (!Files.exists(directory)) {
                 LOGGER.debug("{}: Directory does not exist: {}", description, directory);
-                return;
             }
 
             if (!Files.isDirectory(directory)) {
                 LOGGER.debug("{}: Path is not a directory: {}", description, directory);
-                return;
             }
 
             try (Stream<Path> paths = Files.list(directory)) {
@@ -677,10 +670,6 @@ public class ShaderPackManager {
 
         public Path getOriginalDirectory() {
             return cacheDirectory.resolve("original");
-        }
-
-        public Path getCompiledDirectory() {
-            return cacheDirectory.resolve("compiled");
         }
 
         public Path getUpdatedDirectory() {

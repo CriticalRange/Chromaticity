@@ -19,11 +19,8 @@ public class Chromaticity implements ClientModInitializer {
 		// However, some things (like resources) may still be uninitialized.
 		// Proceed with mild caution.
 
-		LOGGER.info("Initializing Chromaticity...");
 
 		// VulkanMod integration is now handled directly by the VOptionScreenMixin
-		LOGGER.info("VulkanMod integration configured via mixin");
 
-		LOGGER.info("Chromaticity initialized successfully");
 	}
 }

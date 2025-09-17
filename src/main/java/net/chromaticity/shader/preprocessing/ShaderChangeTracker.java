@@ -54,8 +54,6 @@ public class ShaderChangeTracker {
                 }
             }
 
-            LOGGER.info("Change analysis completed for pack '{}': {} files analyzed, {} modified",
-                packName, report.getTotalFiles(), report.getModifiedFiles());
 
         } catch (IOException e) {
             LOGGER.error("Failed to analyze changes for pack: {}", packName, e);
@@ -73,8 +71,6 @@ public class ShaderChangeTracker {
             String json = GSON.toJson(report);
             Files.writeString(reportFile, json);
 
-            LOGGER.info("Saved preprocessing report for pack '{}' to: {}",
-                report.getPackName(), reportFile);
 
         } catch (IOException e) {
             LOGGER.error("Failed to save change report for pack: {}", report.getPackName(), e);

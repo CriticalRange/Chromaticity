@@ -67,7 +67,6 @@ public class ShaderOptionParser {
         }
 
         ShaderOptionSet result = builder.build();
-        LOGGER.info("Discovered {} shader options in {}", result.getTotalOptionCount(), shaderDir);
         return result;
     }
 
@@ -100,7 +99,6 @@ public class ShaderOptionParser {
         // Skip empty lines and non-relevant lines
         if (trimmed.isEmpty() ||
             (!trimmed.contains("#define") && !trimmed.contains("const"))) {
-            return;
         }
 
         try {
@@ -130,7 +128,6 @@ public class ShaderOptionParser {
         Matcher matcher = definePattern.matcher(workingLine);
 
         if (!matcher.matches()) {
-            return;
         }
 
         String optionName = matcher.group(1);
@@ -171,7 +168,6 @@ public class ShaderOptionParser {
         Matcher matcher = constPattern.matcher(line);
 
         if (!matcher.matches()) {
-            return;
         }
 
         String type = matcher.group(1);
@@ -181,7 +177,6 @@ public class ShaderOptionParser {
 
         // Only process known const option names for compatibility
         if (!VALID_CONST_OPTION_NAMES.contains(optionName)) {
-            return;
         }
 
         if ("bool".equals(type)) {

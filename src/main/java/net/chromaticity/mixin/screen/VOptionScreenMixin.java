@@ -48,7 +48,6 @@ public class VOptionScreenMixin {
             for (VButtonWidget button : buttons) {
                 if (button == this.chromaticityShaderPacksButton) {
                     buttonExists = true;
-                    break;
                 }
             }
 
@@ -73,7 +72,6 @@ public class VOptionScreenMixin {
             if (supportButton == null) {
                 // Use fallback position if support button isn't found
                 createAndAddButton(screen, 200, 200);
-                return;
             }
 
             // Calculate position to the left of Support Me button
@@ -125,7 +123,6 @@ public class VOptionScreenMixin {
             if (isClicked) {
                 this.chromaticityShaderPacksButton.onClick(mouseX, mouseY);
                 cir.setReturnValue(true);
-                return;
             }
         }
     }

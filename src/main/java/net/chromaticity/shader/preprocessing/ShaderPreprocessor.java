@@ -139,20 +139,80 @@ public class ShaderPreprocessor {
         for (String line : lines) {
             String expandedLine = line;
 
-            // Expand each defined macro
+            // Skip macro expansion on preprocessor directive lines to prevent malformed directives
+            String trimmedLine = line.trim();
+            if (trimmedLine.startsWith("#")) {
+                result.add(line);
+                continue;
+            }
+
+            // Expand each defined macro with careful syntax checking
             for (Map.Entry<String, String> define : defines.entrySet()) {
                 String macro = define.getKey();
                 String value = define.getValue();
 
+                // Safely handle null or empty values
+                if (value == null) {
+                    value = "";
+                }
+
                 // Use word boundaries to avoid partial replacements
                 String pattern = "\\b" + Pattern.quote(macro) + "\\b";
-                expandedLine = expandedLine.replaceAll(pattern, value);
+                expandedLine = expandSafelyWithContext(expandedLine, pattern, value);
             }
 
             result.add(expandedLine);
         }
 
         return result;
+    }
+
+    /**
+     * Safely expands a macro while checking for potential syntax issues.
+     */
+    private String expandSafelyWithContext(String line, String pattern, String value) {
+        // If value is empty, just remove the macro reference
+        if (value.isEmpty()) {
+            return line.replaceAll(pattern, "");
+        }
+
+        // Protect GLSL built-in types from being broken by macro expansion
+        String[] glslProtectedTypes = {"vec2", "vec3", "vec4", "mat2", "mat3", "mat4", "ivec2", "ivec3", "ivec4",
+                                      "uvec2", "uvec3", "uvec4", "sampler2D", "sampler3D", "samplereCube",
+                                      "sampler2DArray", "sampler2DShadow", "std140", "std430"};
+
+        // Don't expand macros that would break GLSL type names
+        for (String glslType : glslProtectedTypes) {
+            if (line.contains(glslType)) {
+                // Check if the pattern would break this GLSL type
+                String testReplacement = glslType.replaceAll(pattern, Matcher.quoteReplacement(value));
+                if (!testReplacement.equals(glslType) && !isValidGLSLType(testReplacement)) {
+                    // This macro expansion would break a GLSL type, skip it
+                    return line;
+                }
+            }
+        }
+
+        // Check if the value is a pure integer/float constant
+        boolean isNumericConstant = value.matches("^[+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?[fF]?$");
+
+        if (isNumericConstant) {
+            // For numeric constants, be very careful about spacing
+            // Only add space if it's not already surrounded by valid syntax
+            return line.replaceAll(pattern, Matcher.quoteReplacement(value));
+        } else {
+            // For non-numeric values, use standard replacement
+            return line.replaceAll(pattern, Matcher.quoteReplacement(value));
+        }
+    }
+
+    /**
+     * Checks if a string is a valid GLSL type name.
+     */
+    private boolean isValidGLSLType(String typeName) {
+        return typeName.matches("^(vec|ivec|uvec|mat)[234]$") ||
+               typeName.matches("^sampler(2D|3D|Cube|2DArray|2DShadow)$") ||
+               typeName.equals("std140") || typeName.equals("std430");
     }
 
     /**

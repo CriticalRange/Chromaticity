@@ -77,7 +77,6 @@ public class ScrollableShaderOptionsList extends ObjectSelectionList<ScrollableS
                 if (itemName == null || itemName.isEmpty()) {
                     // Empty slot - just advance X position
                     currentX += BUTTON_WIDTH + SPACING_X;
-                    continue;
                 }
 
                 // Handle button navigation (child screens)
@@ -116,19 +115,14 @@ public class ScrollableShaderOptionsList extends ObjectSelectionList<ScrollableS
             switch (option.getType()) {
                 case TOGGLE:
                     createToggleButton(option, x, y);
-                    break;
                 case SLIDER:
                     createSliderWidget(option, x, y);
-                    break;
                 case DROPDOWN:
                     createDropdownButton(option, x, y);
-                    break;
                 case PROFILE:
                     createProfileButton(option, x, y);
-                    break;
                 default:
                     createGenericButton(option, x, y);
-                    break;
             }
         }
 

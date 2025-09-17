@@ -88,8 +88,6 @@ public class ShaderPackSettingsScreen extends Screen {
         // Generate option widgets
         generateOptionWidgets(headerHeight, contentHeight);
 
-        LOGGER.info("Initialized settings screen for pack: {} with {} options",
-                   packInfo.getName(), packInfo.getOptionSet().getTotalOptionCount());
     }
 
     private void generateOptionWidgets(int startY, int availableHeight) {
@@ -212,7 +210,6 @@ public class ShaderPackSettingsScreen extends Screen {
         // Reinitialize the screen to update widgets
         this.init();
 
-        LOGGER.info("Reset all options to defaults for pack: {}", packInfo.getName());
     }
 
     private void applySettings() {
@@ -224,8 +221,6 @@ public class ShaderPackSettingsScreen extends Screen {
             // Apply settings through the manager
             shaderPackManager.applySettings(packInfo.getName(), settingsMap);
 
-            LOGGER.info("Applied settings for pack: {} ({} changed options)",
-                       packInfo.getName(), packInfo.getSettings().getChangedOptionCount());
 
             // Trigger shader pack processing (compilation)
             shaderPackManager.processShaderPack(packInfo.getName());

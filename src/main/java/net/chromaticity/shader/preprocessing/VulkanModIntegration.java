@@ -45,7 +45,6 @@ public class VulkanModIntegration {
             }
 
             vulkanModAvailable = true;
-            LOGGER.info("VulkanMod integration successfully initialized");
 
         } catch (ClassNotFoundException | NoSuchMethodException e) {
             vulkanModAvailable = false;
@@ -79,7 +78,6 @@ public class VulkanModIntegration {
      */
     public static void addShaderPackIncludePaths(String packName) {
         if (!vulkanModAvailable) {
-            return;
         }
 
         // Add standard shaderpack include paths
@@ -90,7 +88,6 @@ public class VulkanModIntegration {
         addIncludePath(baseResourcePath + "/shaders/include/");
         addIncludePath(baseResourcePath + "/");
 
-        LOGGER.info("Configured VulkanMod include paths for shader pack: {}", packName);
     }
 
     /**
@@ -198,13 +195,24 @@ public class VulkanModIntegration {
             lines.add(insertIndex++, bindingDeclaration);
         }
 
-        // Add other uniform bindings with proper types
+        // Add bindings ONLY for opaque uniforms (samplers, images)
+        // Non-opaque uniforms (floats, vectors, matrices) will be handled by uniform blocks later
         for (String uniform : analysis.getUnboundUniforms()) {
             if (!analysis.getSamplers().contains(uniform)) {
                 String uniformType = getUniformType(uniform);
-                String bindingDeclaration = String.format("layout(binding = %d) uniform %s %s;",
-                    bindingIndex++, uniformType, uniform);
-                lines.add(insertIndex++, bindingDeclaration);
+
+                // Only add individual bindings for opaque types in Vulkan
+                if (isOpaqueUniformType(uniformType)) {
+                    String bindingDeclaration = String.format("layout(binding = %d) uniform %s %s;",
+                        bindingIndex++, uniformType, uniform);
+                    lines.add(insertIndex++, bindingDeclaration);
+                    LOGGER.debug("Added binding for opaque uniform: {} {}", uniformType, uniform);
+                } else {
+                    // Non-opaque uniforms stay as loose uniforms to be processed by uniform block conversion
+                    String uniformDeclaration = String.format("uniform %s %s;", uniformType, uniform);
+                    lines.add(insertIndex++, uniformDeclaration);
+                    LOGGER.debug("Added loose uniform for block conversion: {} {}", uniformType, uniform);
+                }
             }
         }
 
@@ -292,6 +300,24 @@ public class VulkanModIntegration {
             }
         }
         return lines.size();
+    }
+
+    /**
+     * Determines if a uniform type is opaque and can have individual layout bindings in Vulkan.
+     * Only opaque types (samplers, images, atomic counters) can have individual bindings.
+     * Non-opaque types (floats, vectors, matrices) must be in uniform blocks.
+     */
+    private static boolean isOpaqueUniformType(String uniformType) {
+        if (uniformType == null) return false;
+
+        // Remove array notation for comparison
+        String baseType = uniformType.replaceAll("\\[\\d*\\]", "");
+
+        // Opaque types that can have individual layout bindings in Vulkan
+        return baseType.contains("sampler") ||
+               baseType.contains("image") ||
+               baseType.contains("texture") ||
+               baseType.equals("atomic_uint");
     }
 
     /**

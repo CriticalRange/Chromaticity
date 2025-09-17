@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -43,7 +44,6 @@ public class ShaderTranslationService {
         // Check cache first
         String cacheKey = generateCacheKey(shaderFile, optionValues);
         if (translationCache.containsKey(cacheKey)) {
-            LOGGER.debug("Using cached translation for shader: {}", fileName);
             return translationCache.get(cacheKey);
         }
 
@@ -53,8 +53,6 @@ public class ShaderTranslationService {
             LOGGER.warn("Shader file is empty: {}", fileName);
             return originalSource;
         }
-
-        LOGGER.info("Translating shader: {}", fileName);
 
         // Determine shader type from file name
         ShaderType shaderType = ShaderType.fromFileName(fileName);
@@ -67,7 +65,16 @@ public class ShaderTranslationService {
             translatedSource = preprocessor.preprocessShader(translatedSource, optionValues, fileName);
 
             // Step 2: Version translation - upgrade to GLSL 450 core
-            translatedSource = versionTranslator.translateShader(translatedSource, shaderType);
+            // For include files, apply minimal translation without version directives or output declarations
+            boolean isIncludeFile = isIncludeFile(shaderFile);
+            LOGGER.debug("Processing shader file: {} - isIncludeFile: {}", fileName, isIncludeFile);
+            if (isIncludeFile) {
+                LOGGER.debug("Using translateShaderMinimal for include file: {}", fileName);
+                translatedSource = versionTranslator.translateShaderMinimal(translatedSource, shaderType);
+            } else {
+                LOGGER.debug("Using translateShader for main shader: {}", fileName);
+                translatedSource = versionTranslator.translateShader(translatedSource, shaderType);
+            }
 
             // Step 3: Uniform mapping - convert OpenGL uniforms to Vulkan equivalents
             translatedSource = uniformMapper.mapUniforms(translatedSource, shaderType);
@@ -75,7 +82,6 @@ public class ShaderTranslationService {
             // Cache the result
             translationCache.put(cacheKey, translatedSource);
 
-            LOGGER.info("Successfully translated shader: {} (type: {})", fileName, shaderType);
             return translatedSource;
 
         } catch (Exception e) {
@@ -86,43 +92,112 @@ public class ShaderTranslationService {
     }
 
     /**
+     * Translates shader source code directly (used for preprocessed sources).
+     */
+    private String translateShaderSource(String source, Path shaderFile, ShaderOptionValues optionValues) throws IOException {
+        String fileName = shaderFile.getFileName().toString();
+
+        // Check cache first
+        String cacheKey = generateCacheKey(source, fileName, optionValues);
+        if (translationCache.containsKey(cacheKey)) {
+            return translationCache.get(cacheKey);
+        }
+
+        try {
+            // Determine shader type from filename
+            ShaderType shaderType = ShaderType.fromFileName(fileName);
+
+            // Apply complete translation pipeline to the preprocessed source
+            String translatedSource = source;
+
+            // Step 1: Already preprocessed (includes flattened), skip this step
+
+            // Step 2: Version translation - upgrade to GLSL 450 core
+            translatedSource = versionTranslator.translateShader(translatedSource, shaderType);
+
+            // Step 3: Uniform mapping
+            translatedSource = uniformMapper.mapUniforms(translatedSource, shaderType);
+
+            // Cache the result
+            translationCache.put(cacheKey, translatedSource);
+
+            return translatedSource;
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to translate preprocessed shader source: {}", fileName, e);
+            // Return preprocessed source as fallback
+            return source;
+        }
+    }
+
+    /**
      * Translates all shader files in a directory.
      */
     public void translateShaderDirectory(Path originalDir, Path compiledDir, ShaderOptionValues optionValues) throws IOException {
         if (!Files.exists(originalDir)) {
             LOGGER.warn("Original shader directory does not exist: {}", originalDir);
-            return;
         }
 
         // Ensure compiled directory exists
         Files.createDirectories(compiledDir);
 
-        LOGGER.debug("Starting shader translation from {} to {}", originalDir, compiledDir);
+        // VulkanMod approach: No include preprocessing needed
+        // ShaderC handles includes via callbacks during compilation
 
-        // Find all shader files and include files
+        // Find all shader files and utility files that need processing
         List<Path> shaderFiles;
-        List<Path> includeFiles;
+        List<Path> utilityFiles;
         try (Stream<Path> paths = Files.walk(originalDir)) {
-            List<Path> allFiles = paths.filter(Files::isRegularFile).collect(Collectors.toList());
-            shaderFiles = allFiles.stream().filter(this::isShaderFile).collect(Collectors.toList());
-            includeFiles = allFiles.stream().filter(this::isIncludeFile).collect(Collectors.toList());
+            List<Path> allShaderFiles = paths.filter(Files::isRegularFile)
+                                            .filter(this::isAnyShaderFile)
+                                            .collect(Collectors.toList());
+
+            // Separate .glsl files (includes) from main shader files (.vsh/.fsh/etc)
+            List<Path> glslFiles = allShaderFiles.stream()
+                                                .filter(path -> path.toString().toLowerCase().endsWith(".glsl"))
+                                                .collect(Collectors.toList());
+
+            shaderFiles = allShaderFiles.stream()
+                                       .filter(path -> !path.toString().toLowerCase().endsWith(".glsl"))
+                                       .collect(Collectors.toList());
+
+            utilityFiles = glslFiles; // Process all .glsl files as utilities first
         }
 
-        LOGGER.info("Found {} shader files and {} include files to process in directory: {}",
-            shaderFiles.size(), includeFiles.size(), originalDir);
+        if (shaderFiles.isEmpty() && utilityFiles.isEmpty()) {
+            LOGGER.warn("No GLSL files found in directory: {}", originalDir);
+        }
 
-        if (shaderFiles.isEmpty() && includeFiles.isEmpty()) {
-            LOGGER.warn("No shader or include files found in directory: {}", originalDir);
-            // List all files for debugging
-            try (Stream<Path> paths = Files.walk(originalDir)) {
-                List<Path> allFiles = paths.filter(Files::isRegularFile).collect(Collectors.toList());
-                LOGGER.debug("Directory contains {} total files:", allFiles.size());
-                allFiles.forEach(file -> LOGGER.debug("  - {}", file.getFileName()));
+        // First, process all .glsl files (includes) with appropriate translation
+        for (Path glslFile : utilityFiles) {
+            try {
+                // Determine relative path
+                Path relativePath = originalDir.relativize(glslFile);
+                Path outputFile = compiledDir.resolve(relativePath);
+
+                // Ensure parent directories exist
+                Files.createDirectories(outputFile.getParent());
+
+                // Use appropriate translation based on file type
+                String translatedSource;
+                if (isIncludeFile(glslFile)) {
+                    // Include files need proper translation with include directive support
+                    LOGGER.debug("Processing include file: {}", glslFile.getFileName());
+                    translatedSource = translateShaderFile(glslFile, optionValues);
+                } else {
+                    // Small utility files get basic syntax fixes only
+                    String originalSource = Files.readString(glslFile);
+                    translatedSource = fixBasicSyntax(originalSource);
+                }
+
+                Files.writeString(outputFile, translatedSource);
+
+            } catch (IOException e) {
+                LOGGER.error("Failed to process .glsl file: {}", glslFile, e);
             }
-            return;
         }
 
-        // Process main shader files first
+        // Process all shader files with full translation
         int processedCount = 0;
         for (Path shaderFile : shaderFiles) {
             try {
@@ -133,54 +208,25 @@ public class ShaderTranslationService {
                 // Ensure parent directories exist
                 Files.createDirectories(outputFile.getParent());
 
-                // Translate and save
+                // VulkanMod approach: Direct translation, preserve #include directives
                 String translatedSource = translateShaderFile(shaderFile, optionValues);
                 Files.writeString(outputFile, translatedSource);
 
                 processedCount++;
-                LOGGER.debug("Translated shader [{}/{}]: {} -> {}",
-                    processedCount, shaderFiles.size(),
-                    shaderFile.getFileName(), outputFile.getFileName());
 
             } catch (IOException e) {
                 LOGGER.error("Failed to translate shader file: {}", shaderFile, e);
             }
         }
 
-        // Process include files (minimal processing - mostly copy with basic compatibility fixes)
-        for (Path includeFile : includeFiles) {
-            try {
-                // Determine relative path
-                Path relativePath = originalDir.relativize(includeFile);
-                Path outputFile = compiledDir.resolve(relativePath);
-
-                // Ensure parent directories exist
-                Files.createDirectories(outputFile.getParent());
-
-                // Apply minimal processing to include files
-                String processedSource = processIncludeFile(includeFile);
-                Files.writeString(outputFile, processedSource);
-
-                processedCount++;
-                LOGGER.debug("Processed include file [{}/{}]: {} -> {}",
-                    processedCount, shaderFiles.size() + includeFiles.size(),
-                    includeFile.getFileName(), outputFile.getFileName());
-
-            } catch (IOException e) {
-                LOGGER.error("Failed to process include file: {}", includeFile, e);
-            }
-        }
-
-        LOGGER.info("Completed translation of shader directory: {} ({}/{} files processed - {} shaders, {} includes)",
-            originalDir, processedCount, shaderFiles.size() + includeFiles.size(), shaderFiles.size(), includeFiles.size());
     }
 
     /**
-     * Checks if a file is a main shader file that needs full GLSL 450 transformation.
-     * Include files (.glsl) are processed separately.
+     * Checks if a file is any kind of shader-related file (for initial filtering).
      */
-    private boolean isShaderFile(Path file) {
+    private boolean isAnyShaderFile(Path file) {
         String fileName = file.getFileName().toString().toLowerCase();
+
         return fileName.endsWith(".vsh") ||
                fileName.endsWith(".fsh") ||
                fileName.endsWith(".gsh") ||
@@ -188,100 +234,181 @@ public class ShaderTranslationService {
                fileName.endsWith(".tes") ||
                fileName.endsWith(".vert") ||
                fileName.endsWith(".frag") ||
-               fileName.endsWith(".geom");
+               fileName.endsWith(".geom") ||
+               fileName.endsWith(".glsl");
     }
 
     /**
-     * Checks if a file is an include file that needs minimal processing.
+     * Checks if a file is a shader file that needs full GLSL 450 transformation.
+     * Processes all shader files including world-specific and program shaders.
      */
-    private boolean isIncludeFile(Path file) {
+    private boolean isShaderFile(Path file) {
         String fileName = file.getFileName().toString().toLowerCase();
         String pathStr = file.toString().replace('\\', '/');
 
-        // .glsl files are typically include files
-        if (fileName.endsWith(".glsl")) {
+        // All shader file extensions get full processing
+        if (fileName.endsWith(".vsh") ||
+            fileName.endsWith(".fsh") ||
+            fileName.endsWith(".gsh") ||
+            fileName.endsWith(".tcs") ||
+            fileName.endsWith(".tes") ||
+            fileName.endsWith(".vert") ||
+            fileName.endsWith(".frag") ||
+            fileName.endsWith(".geom")) {
             return true;
         }
 
-        // Files in lib/ or include/ directories are include files
-        return pathStr.contains("/lib/") || pathStr.contains("/include/") ||
-               pathStr.contains("\\lib\\") || pathStr.contains("\\include\\");
+        // .glsl files get full processing except small utility files
+        if (fileName.endsWith(".glsl")) {
+            // Only exclude small utility files that are truly just includes
+            return !(fileName.equals("const.glsl") ||
+                     fileName.equals("macros.glsl") ||
+                     fileName.equals("functions.glsl") ||
+                     fileName.equals("encoders.glsl") ||
+                     fileName.equals("transforms.glsl") ||
+                     fileName.equals("bicubic.glsl") ||
+                     fileName.equals("colorspace.glsl") ||
+                     fileName.equals("poisson.glsl"));
+        }
+
+        return false;
     }
 
     /**
-     * Processes an include file with minimal transformations.
-     * Unlike main shader files, include files don't get GLSL 450 headers or output declarations.
+     * Checks if a file is an include file that should not get version directives or output declarations.
      */
-    private String processIncludeFile(Path includeFile) throws IOException {
-        String originalSource = Files.readString(includeFile);
-        String result = originalSource;
+    private boolean isIncludeFile(Path file) {
+        String pathStr = file.toString().replace('\\', '/');
 
-        // Basic syntax fixes for include files
-        result = fixBasicSyntax(result);
+        // Files in lib/ directories are include files
+        if (pathStr.contains("/lib/") || pathStr.contains("\\lib\\")) {
+            return true;
+        }
 
-        // Apply minimal compatibility transformations (but not full GLSL 450 transformation)
-        result = applyMinimalCompatibilityFixes(result);
+        // Files in include/ directories are include files
+        if (pathStr.contains("/include/") || pathStr.contains("\\include\\")) {
+            return true;
+        }
 
-        return result;
+        // Common include file names
+        String fileName = file.getFileName().toString().toLowerCase();
+        if (fileName.equals("settings.glsl") ||
+            fileName.equals("internal.glsl") ||
+            fileName.equals("head.glsl") ||
+            fileName.equals("const.glsl") ||
+            fileName.equals("macros.glsl") ||
+            fileName.equals("functions.glsl") ||
+            fileName.equals("encoders.glsl") ||
+            fileName.equals("transforms.glsl")) {
+            return true;
+        }
+
+        return false;
     }
+
 
     /**
      * Fixes basic syntax issues that might prevent compilation.
      */
     private String fixBasicSyntax(String source) {
-        // Fix common syntax issues
-        String result = source;
+        // Single-pass processor for all syntax fixes
+        String result = applySyntaxFixes(source);
 
-        // Ensure comments are properly closed
-        result = fixUnclosedComments(result);
+        // Ensure file ends with proper newline (critical for shaderc)
+        result = ensureProperFileEnding(result);
 
         return result;
     }
 
     /**
-     * Fixes unclosed block comments.
+     * Ensures the shader file ends with a proper newline character.
+     * This is critical for shaderc to properly parse comments and preprocessor directives.
      */
-    private String fixUnclosedComments(String source) {
-        String result = source;
-
-        // Count opening and closing comment markers
-        long openComments = result.chars().filter(ch -> ch == '/').count();
-        if (openComments > 0 && result.contains("/*") && !result.contains("*/")) {
-            // Add missing closing comment marker at the end
-            result = result + "\n*/";
+    private String ensureProperFileEnding(String source) {
+        if (source == null || source.isEmpty()) {
+            return source;
         }
 
-        return result;
-    }
-
-    /**
-     * Applies minimal compatibility fixes for include files.
-     */
-    private String applyMinimalCompatibilityFixes(String source) {
-        String result = source;
-
-        // Only apply basic variable transformations, no GLSL 450 additions
-        result = replaceBuiltInVariables(result, null); // No shader type context for includes
+        // Ensure file ends with exactly one newline
+        String result = source.replaceAll("\\s+$", ""); // Remove trailing whitespace
+        result = result + "\n"; // Add single newline
 
         return result;
     }
 
     /**
-     * Replaces built-in variables with modern equivalents, but only basic ones for include files.
+     * Consolidated single-pass processor for all syntax fixes.
+     * Combines comment pattern fixes, include directive fixes, and operator spacing fixes.
      */
-    private String replaceBuiltInVariables(String source, ShaderType shaderType) {
-        String result = source;
+    private String applySyntaxFixes(String source) {
+        String[] lines = source.split("\n");
+        StringBuilder result = new StringBuilder();
 
-        // For include files, we need to be more careful about gl_Position
-        // The discard.glsl file has gl_Position in what's meant to be fragment shader code
-        // Replace problematic gl_Position assignments that don't make sense in fragment context
-        if (result.contains("gl_Position") && result.contains("discard")) {
-            // This looks like fragment shader code with invalid gl_Position usage
-            result = result.replaceAll("gl_Position\\s*=\\s*vec4\\(-1\\.0\\);?", "// gl_Position removed - invalid in fragment shader");
+        // Pre-compile patterns for efficiency
+        // Pattern matches: //[numbers with spaces] including decimals and negative numbers
+        Pattern commentBracketPattern = Pattern.compile("(//.*?\\[)([\\d\\-\\.\\s]+)(\\])");
+
+        for (String line : lines) {
+            String originalLine = line;
+            String processedLine = line;
+
+            // 1. Fix problematic comment patterns: //[0 1 2 3 4 5] -> //[0_1_2_3_4_5]
+            if (line.contains("//") && line.contains("[") && line.contains("]")) {
+                Matcher matcher = commentBracketPattern.matcher(line);
+                if (matcher.find()) {
+                    String prefix = matcher.group(1);
+                    String numbers = matcher.group(2);
+                    String suffix = matcher.group(3);
+                    if (numbers.contains(" ")) {
+                        String fixedNumbers = numbers.replaceAll("\\s+", "_");
+                        processedLine = line.substring(0, matcher.start()) + prefix + fixedNumbers + suffix + line.substring(matcher.end());
+                        // Only log critical comment pattern fixes
+                    }
+                }
+            }
+
+            // 1b. Fix dash-separated patterns in comments: 4-albedo -> 4_albedo (prevents INTCONSTANT errors)
+            if (processedLine.contains("//")) {
+                processedLine = processedLine.replaceAll("(\\d+)-(\\w+)", "$1_$2");
+            }
+
+            // 2. Fix include directives: #include <path> -> #include "path"
+            if (processedLine.trim().matches("^#include\\s+<.*>.*")) {
+                processedLine = processedLine.replaceAll("#include\\s+<([^>]+)>", "#include \"$1\"");
+            }
+
+            // 3. Fix operator spacing and excessive whitespace (skip only comments)
+            String trimmed = processedLine.trim();
+            if (!trimmed.startsWith("//") && !trimmed.startsWith("/*") && !trimmed.isEmpty()) {
+                // Fix operator spacing
+                processedLine = processedLine.replaceAll("\\s{2,}=\\s*", " = ");
+                processedLine = processedLine.replaceAll("\\s*=\\s{2,}", " = ");
+
+                // Fix excessive whitespace (including in preprocessor directives)
+                processedLine = processedLine.replaceAll("\\s{3,}", " ");
+            }
+
+            result.append(processedLine);
+            if (!line.equals(lines[lines.length - 1])) {
+                result.append("\n");
+            }
         }
 
-        return result;
+        return result.toString();
     }
+
+    /**
+     * Gets the indentation of a line.
+     */
+    private String getIndentation(String line) {
+        int i = 0;
+        while (i < line.length() && Character.isWhitespace(line.charAt(i))) {
+            i++;
+        }
+        return line.substring(0, i);
+    }
+
+
 
     /**
      * Generates a cache key for a shader translation.
@@ -302,11 +429,28 @@ public class ShaderTranslationService {
     }
 
     /**
+     * Generate cache key for source string.
+     */
+    private String generateCacheKey(String source, String fileName, ShaderOptionValues optionValues) {
+        StringBuilder keyBuilder = new StringBuilder();
+        keyBuilder.append(fileName).append("_").append(source.hashCode());
+
+        if (optionValues != null) {
+            // Include option values in cache key
+            Map<String, String> options = optionValues.toPropertiesMap();
+            options.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> keyBuilder.append("|").append(entry.getKey()).append("=").append(entry.getValue()));
+        }
+
+        return keyBuilder.toString();
+    }
+
+    /**
      * Clears the translation cache.
      */
     public void clearCache() {
         translationCache.clear();
-        LOGGER.debug("Translation cache cleared");
     }
 
     /**
@@ -368,7 +512,6 @@ public class ShaderTranslationService {
                 result = result.replaceAll(referencePattern, vulkanUniform);
             }
 
-            LOGGER.debug("Applied uniform mappings for {} shader", shaderType);
             return result;
         }
 

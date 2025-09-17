@@ -60,8 +60,8 @@ public class DynamicShaderScreen extends Screen {
         this.optionsList = new ScrollableShaderOptionsList(
             this.minecraft,
             this.width - 40, // Width with margins
-            listHeight,
-            CONTENT_START_Y,
+            listHeight, // Height
+            CONTENT_START_Y, // Y position
             35, // Item height (row height)
             this,
             this.screenDefinition,

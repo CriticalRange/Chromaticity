@@ -49,7 +49,6 @@ public class ShaderPackConfig {
                 values.put(key, props.getProperty(key));
             }
 
-            Chromaticity.LOGGER.info("Loaded config for shader pack: {}", shaderPackName);
         } catch (IOException e) {
             Chromaticity.LOGGER.error("Failed to load config for shader pack: {}", shaderPackName, e);
         }
@@ -65,7 +64,6 @@ public class ShaderPackConfig {
 
         try (OutputStream output = Files.newOutputStream(configFile)) {
             props.store(output, "Chromaticity shader pack configuration for: " + shaderPackName);
-            Chromaticity.LOGGER.info("Saved config for shader pack: {}", shaderPackName);
         } catch (IOException e) {
             Chromaticity.LOGGER.error("Failed to save config for shader pack: {}", shaderPackName, e);
         }

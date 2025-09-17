@@ -2,6 +2,7 @@ package net.chromaticity.shader.compilation;
 
 import net.chromaticity.shader.ShaderPackManager;
 import net.chromaticity.shader.preprocessing.ShaderTranslationService;
+import net.chromaticity.shader.include.AbsolutePackPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,8 +16,8 @@ import java.util.stream.Stream;
 
 /**
  * Service that orchestrates the complete shader compilation pipeline:
- * GLSL Source → Preprocessing → SPIR-V Compilation → Caching
- * Uses DirectShaderCompiler with LWJGL shaderc for file system include support.
+ * GLSL Source → Include Preprocessing → SPIR-V Compilation → Caching
+ * Uses DirectShaderCompilerPreprocessing with Iris-style include flattening.
  */
 public class ShaderCompilationService {
     private static final Logger LOGGER = LoggerFactory.getLogger(ShaderCompilationService.class);
@@ -35,7 +36,7 @@ public class ShaderCompilationService {
         private final String shaderpackName;
         private final Path updatedDir;
         private final Path compiledDir;
-        private final Map<String, DirectShaderCompiler.CompilationResult> compiledShaders;
+        private final Map<String, DirectShaderCompilerPreprocessing.CompilationResult> compiledShaders;
         private final long startTime;
 
         public CompilationSession(String shaderpackName, Path updatedDir, Path compiledDir) {
@@ -49,7 +50,7 @@ public class ShaderCompilationService {
         public String getShaderpackName() { return shaderpackName; }
         public Path getUpdatedDir() { return updatedDir; }
         public Path getCompiledDir() { return compiledDir; }
-        public Map<String, DirectShaderCompiler.CompilationResult> getCompiledShaders() { return compiledShaders; }
+        public Map<String, DirectShaderCompilerPreprocessing.CompilationResult> getCompiledShaders() { return compiledShaders; }
         public long getStartTime() { return startTime; }
         public long getDuration() { return System.currentTimeMillis() - startTime; }
         public int getShaderCount() { return compiledShaders.size(); }
@@ -64,10 +65,11 @@ public class ShaderCompilationService {
      * @return CompilationSession containing compilation results and statistics
      */
     public CompilationSession compileShaderpackToSpirv(String shaderpackName, Path updatedDir, Path compiledDir) {
-        // DirectShaderCompiler is always available as it uses LWJGL shaderc directly
-        LOGGER.debug("Using DirectShaderCompiler: {}", DirectShaderCompiler.getStats());
+        // Initialize preprocessing include system for this shaderpack
+        LOGGER.info("Initializing preprocessing include system for: {}", shaderpackName);
+        DirectShaderCompilerPreprocessing.initializeIncludeSystem(updatedDir);
+        LOGGER.debug("Using DirectShaderCompilerPreprocessing: {}", DirectShaderCompilerPreprocessing.getStats());
 
-        LOGGER.info("Starting SPIR-V compilation for shaderpack: {}", shaderpackName);
 
         CompilationSession session = new CompilationSession(shaderpackName, updatedDir, compiledDir);
         activeSessions.put(shaderpackName, session);
@@ -76,12 +78,10 @@ public class ShaderCompilationService {
             // Create compiled directory
             Files.createDirectories(compiledDir);
 
-            // Configure include paths for this shaderpack
-            configureDirectShaderCompilerIncludes(shaderpackName, updatedDir.getParent());
+            // No need to configure include paths - preprocessing handles all includes
 
             // Find all preprocessed shader files
             List<Path> shaderFiles = findShaderFiles(updatedDir);
-            LOGGER.info("Found {} preprocessed shader files to compile to SPIR-V", shaderFiles.size());
 
             // Compile each shader file with safety measures
             int compiledCount = 0;
@@ -89,8 +89,6 @@ public class ShaderCompilationService {
             int skippedCount = 0;
             final int MAX_BATCH_SIZE = 10; // Process in smaller batches to prevent crashes
 
-            LOGGER.info("Processing {} shaders in batches of {} to prevent memory issues",
-                shaderFiles.size(), MAX_BATCH_SIZE);
 
             for (int i = 0; i < shaderFiles.size(); i++) {
                 Path shaderFile = shaderFiles.get(i);
@@ -103,7 +101,6 @@ public class ShaderCompilationService {
                             i / MAX_BATCH_SIZE, (shaderFiles.size() + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
-                        break;
                     }
                 }
                 try {
@@ -111,7 +108,7 @@ public class ShaderCompilationService {
                     if (!isValidForCompilation(shaderFile)) {
                         skippedCount++;
                         LOGGER.debug("Skipping invalid shader file: {}", shaderFile.getFileName());
-                        continue;
+                        continue; // IMPORTANT: Actually skip the file!
                     }
 
                     // Determine relative path for output
@@ -121,9 +118,13 @@ public class ShaderCompilationService {
                     // Create output directory
                     Files.createDirectories(spirvOutputPath.getParent());
 
-                    // Compile to SPIR-V with additional safety checks
-                    DirectShaderCompiler.CompilationResult result =
-                        DirectShaderCompiler.compileShaderFile(shaderFile);
+                    // VulkanMod approach: Read translated shader and compile with include callbacks
+                    String shaderSource = Files.readString(shaderFile);
+                    String filename = shaderFile.getFileName().toString();
+                    DirectShaderCompilerPreprocessing.ShaderStage stage =
+                        DirectShaderCompilerPreprocessing.ShaderStage.fromFileName(filename);
+                    DirectShaderCompilerPreprocessing.CompilationResult result =
+                        DirectShaderCompilerPreprocessing.compileShader(filename, shaderSource, stage);
 
                     // Store compilation result
                     session.getCompiledShaders().put(relativePath.toString(), result);
@@ -154,13 +155,10 @@ public class ShaderCompilationService {
                     if (failedCount > 20 && failureRate > 0.5) {
                         LOGGER.error("Too many compilation failures ({} failed, {:.1f}% failure rate). Stopping to prevent system issues.",
                             failedCount, failureRate * 100);
-                        break;
                     }
                 }
             }
 
-            LOGGER.info("SPIR-V compilation completed for '{}': {} succeeded, {} failed, {} skipped, {} total",
-                shaderpackName, compiledCount, failedCount, skippedCount, shaderFiles.size());
 
             // Generate compilation report
             generateCompilationReport(session);
@@ -184,14 +182,21 @@ public class ShaderCompilationService {
      * @param shaderPath Path to the preprocessed shader file
      * @return CompilationResult containing SPIR-V bytecode and metadata
      */
-    public DirectShaderCompiler.CompilationResult compileSingleShader(String shaderpackName, Path shaderPath) {
-        LOGGER.debug("Compiling single shader to SPIR-V using DirectShaderCompiler: {}", shaderPath);
+    public DirectShaderCompilerPreprocessing.CompilationResult compileSingleShader(String shaderpackName, Path shaderPath) {
+        LOGGER.debug("Compiling single shader to SPIR-V using DirectShaderCompilerPreprocessing: {}", shaderPath);
 
         try {
-            // Configure include paths for this specific shader compilation
-            configureDirectShaderCompilerIncludes(shaderpackName, shaderPath.getParent().getParent());
+            // Initialize preprocessing system if not already done
+            Path shaderpackRoot = shaderPath.getParent().getParent();
+            DirectShaderCompilerPreprocessing.initializeIncludeSystem(shaderpackRoot);
 
-            return DirectShaderCompiler.compileShaderFile(shaderPath);
+            // VulkanMod approach: Read shader file and compile directly with include callbacks
+            String shaderSource = Files.readString(shaderPath);
+            String filename = shaderPath.getFileName().toString();
+            DirectShaderCompilerPreprocessing.ShaderStage stage =
+                DirectShaderCompilerPreprocessing.ShaderStage.fromFileName(filename);
+
+            return DirectShaderCompilerPreprocessing.compileShader(filename, shaderSource, stage);
 
         } catch (Exception e) {
             String errorMsg = String.format("Failed to compile shader '%s' for pack '%s'",
@@ -212,19 +217,14 @@ public class ShaderCompilationService {
      */
     public CompilationSession compileFullPipeline(String shaderpackName, Path originalDir,
                                                  Path updatedDir, Path compiledDir) {
-        LOGGER.info("Starting full shader compilation pipeline for: {}", shaderpackName);
 
         try {
             // Phase 1: Preprocessing (OpenGL → GLSL 450 core)
-            LOGGER.info("Phase 1: Preprocessing OpenGL shaders to GLSL 450 core");
             translationService.translateShaderDirectory(originalDir, updatedDir, null);
 
             // Phase 2: SPIR-V Compilation (GLSL 450 core → SPIR-V bytecode)
-            LOGGER.info("Phase 2: Compiling GLSL 450 core shaders to SPIR-V");
             CompilationSession session = compileShaderpackToSpirv(shaderpackName, updatedDir, compiledDir);
 
-            LOGGER.info("Full compilation pipeline completed for '{}' in {}ms",
-                shaderpackName, session.getDuration());
 
             return session;
 
@@ -242,36 +242,10 @@ public class ShaderCompilationService {
         return new CompilationStatistics(
             activeSessions.size(),
             activeSessions.values().stream().mapToInt(CompilationSession::getShaderCount).sum(),
-            DirectShaderCompiler.getStats()
+            DirectShaderCompilerPreprocessing.getStats()
         );
     }
 
-    /**
-     * Configures include paths for DirectShaderCompiler for a specific shaderpack.
-     *
-     * @param shaderpackName The name of the shaderpack
-     * @param shaderpackBasePath The base path to the shaderpack directory
-     */
-    private void configureDirectShaderCompilerIncludes(String shaderpackName, Path shaderpackBasePath) {
-        // Clear previous include paths
-        DirectShaderCompiler.clearIncludePaths();
-
-        // Add standard shaderpack include paths
-        DirectShaderCompiler.addIncludePath(shaderpackBasePath);
-        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders"));
-        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders").resolve("lib"));
-        DirectShaderCompiler.addIncludePath(shaderpackBasePath.resolve("shaders").resolve("include"));
-
-        // Add updated/processed shaders directory
-        Path updatedShadersPath = shaderpackBasePath.resolve("updated").resolve("shaders");
-        if (Files.exists(updatedShadersPath)) {
-            DirectShaderCompiler.addIncludePath(updatedShadersPath);
-            DirectShaderCompiler.addIncludePath(updatedShadersPath.resolve("lib"));
-            DirectShaderCompiler.addIncludePath(updatedShadersPath.resolve("include"));
-        }
-
-        LOGGER.info("Configured DirectShaderCompiler include paths for shaderpack: {}", shaderpackName);
-    }
 
     /**
      * Finds all shader files recursively in a directory.
@@ -344,6 +318,12 @@ public class ShaderCompilationService {
                 return false;
             }
 
+            // Skip files that look like utility/template files with problematic content
+            if (content.contains("gl_Position") && !content.contains("attribute") && !content.contains("in ")) {
+                LOGGER.debug("Skipping utility shader file with GLSL built-ins but no proper declarations: {}", shaderFile.getFileName());
+                return false;
+            }
+
             return true;
 
         } catch (IOException e) {
@@ -354,9 +334,9 @@ public class ShaderCompilationService {
 
     /**
      * Saves the actual SPIR-V bytecode to disk.
-     * DirectShaderCompiler provides actual bytecode, not just a reference.
+     * DirectShaderCompilerPreprocessing provides actual bytecode, not just a reference.
      */
-    private void saveSpirvPlaceholder(Path outputPath, DirectShaderCompiler.CompilationResult result) throws IOException {
+    private void saveSpirvPlaceholder(Path outputPath, DirectShaderCompilerPreprocessing.CompilationResult result) throws IOException {
         // Save actual SPIR-V bytecode
         byte[] spirvBytecode = result.getSpirvBytecode();
         Files.write(outputPath, spirvBytecode);
@@ -376,7 +356,7 @@ public class ShaderCompilationService {
             report.put("timestamp", new Date().toInstant().toString());
             report.put("duration", session.getDuration());
             report.put("shaderCount", session.getShaderCount());
-            report.put("directShaderCompilerAvailable", DirectShaderCompiler.getStats().isAvailable());
+            report.put("directShaderCompilerAvailable", DirectShaderCompilerPreprocessing.getStats().isAvailable());
 
             // Compilation results
             Map<String, Map<String, Object>> shaderResults = new HashMap<>();
@@ -405,10 +385,10 @@ public class ShaderCompilationService {
     public static class CompilationStatistics {
         private final int activeSessions;
         private final int totalCompiledShaders;
-        private final DirectShaderCompiler.CompilationStats compilerStats;
+        private final DirectShaderCompilerPreprocessing.CompilationStats compilerStats;
 
         public CompilationStatistics(int activeSessions, int totalCompiledShaders,
-                                   DirectShaderCompiler.CompilationStats compilerStats) {
+                                   DirectShaderCompilerPreprocessing.CompilationStats compilerStats) {
             this.activeSessions = activeSessions;
             this.totalCompiledShaders = totalCompiledShaders;
             this.compilerStats = compilerStats;
@@ -416,7 +396,7 @@ public class ShaderCompilationService {
 
         public int getActiveSessions() { return activeSessions; }
         public int getTotalCompiledShaders() { return totalCompiledShaders; }
-        public DirectShaderCompiler.CompilationStats getCompilerStats() { return compilerStats; }
+        public DirectShaderCompilerPreprocessing.CompilationStats getCompilerStats() { return compilerStats; }
 
         @Override
         public String toString() {

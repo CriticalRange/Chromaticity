@@ -147,7 +147,6 @@ public class SimpleShaderPackListWidget extends AbstractWidget {
 
             if (isHovered) {
                 newHoveredIndex = i + this.scrollOffset;
-                break;
             }
         }
 

@@ -39,7 +39,6 @@ public class ShaderPackConfig {
             Map<String, String> settings = new HashMap<>();
             properties.forEach((key, value) -> settings.put(key.toString(), value.toString()));
 
-            LOGGER.info("Loaded {} settings for pack: {}", settings.size(), packName);
             return settings;
 
         } catch (IOException e) {
@@ -66,7 +65,6 @@ public class ShaderPackConfig {
             } catch (IOException e) {
                 LOGGER.warn("Failed to delete empty settings file for pack: {}", packName, e);
             }
-            return;
         }
 
         // Save settings to file
@@ -75,7 +73,6 @@ public class ShaderPackConfig {
 
         try (OutputStream output = Files.newOutputStream(configFile)) {
             properties.store(output, "Chromaticity Shader Pack Settings for " + packName);
-            LOGGER.info("Saved {} settings for pack: {}", settingsToSave.size(), packName);
 
         } catch (IOException e) {
             LOGGER.error("Failed to save settings for pack: {}", packName, e);
@@ -98,7 +95,6 @@ public class ShaderPackConfig {
             Map<String, String> settings = new HashMap<>();
             properties.forEach((key, value) -> settings.put(key.toString(), value.toString()));
 
-            LOGGER.info("Imported {} settings from: {}", settings.size(), importFile);
             return settings;
 
         } catch (IOException e) {
@@ -137,7 +133,6 @@ public class ShaderPackConfig {
 
             try (OutputStream output = Files.newOutputStream(exportFile)) {
                 properties.store(output, "Exported Chromaticity Shader Pack Settings for " + packName);
-                LOGGER.info("Exported {} settings to: {}", allSettings.size(), exportFile);
             }
 
         } catch (IOException e) {
@@ -169,7 +164,6 @@ public class ShaderPackConfig {
         try {
             if (Files.exists(configFile)) {
                 Files.delete(configFile);
-                LOGGER.info("Reset settings for pack: {}", packName);
             }
         } catch (IOException e) {
             LOGGER.error("Failed to reset settings for pack: {}", packName, e);

@@ -42,7 +42,6 @@ public class PropertiesParser {
 
                 // Skip comments and empty lines
                 if (line.isEmpty() || line.startsWith("##")) {
-                    continue;
                 }
 
                 // Handle line continuations
@@ -58,7 +57,6 @@ public class PropertiesParser {
                         // Continuation of multi-line value
                         currentValue.append(" ").append(line.replace("\\", "").trim());
                     }
-                    continue;
                 }
 
                 // End of multi-line value or single line
@@ -86,7 +84,6 @@ public class PropertiesParser {
             String profileName = profileMatcher.group(1);
             String profileValue = profileMatcher.group(2);
             profiles.put(profileName, profileValue);
-            return;
         }
 
         // Parse sliders list
@@ -95,7 +92,6 @@ public class PropertiesParser {
             String slidersValue = slidersMatcher.group(1);
             String[] sliders = slidersValue.split("\\s+");
             Collections.addAll(sliderOptions, sliders);
-            return;
         }
 
         // Parse screen definitions
@@ -107,7 +103,6 @@ public class PropertiesParser {
             }
             String screenLayout = screenMatcher.group(2);
             rawScreenData.put(screenName, screenLayout);
-            return;
         }
 
         // Parse other settings (vignette, separateAo, etc.)

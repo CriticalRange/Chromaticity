@@ -148,7 +148,6 @@ public class ShaderPackScreen extends Screen {
                 Files.createDirectories(shaderPacksPath);
             } catch (Exception e) {
                 // Failed to create directory
-                return;
             }
         }
 
@@ -220,7 +219,6 @@ public class ShaderPackScreen extends Screen {
                     // Use new option-based settings screen
                     ShaderPackSettingsScreen settingsScreen = new ShaderPackSettingsScreen(this, packInfo, shaderPackManager);
                     this.minecraft.setScreen(settingsScreen);
-                    return;
                 }
 
                 // Fallback to old properties-based system

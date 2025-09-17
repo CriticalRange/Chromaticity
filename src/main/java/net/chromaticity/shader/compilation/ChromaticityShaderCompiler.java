@@ -115,7 +115,6 @@ public class ChromaticityShaderCompiler {
             }
 
             vulkanModAvailable = true;
-            LOGGER.info("ChromaticityShaderCompiler successfully integrated with VulkanMod's SPIR-V system");
 
         } catch (ClassNotFoundException | NoSuchMethodException e) {
             vulkanModAvailable = false;
@@ -158,8 +157,6 @@ public class ChromaticityShaderCompiler {
             // Cache the result
             compiledShaderCache.put(cacheKey, spirvResult);
 
-            LOGGER.info("Successfully compiled {} shader '{}' to SPIR-V ({} bytes)",
-                stage.getName(), shaderName, "bytecode_size");
 
             return new CompilationResult(spirvResult, shaderName, stage, false);
 
@@ -222,7 +219,6 @@ public class ChromaticityShaderCompiler {
      */
     public static void configureShaderpackIncludes(String shaderpackName, Path shaderpackBasePath) {
         if (!vulkanModAvailable) {
-            return;
         }
 
         // Add standard shaderpack include paths
@@ -237,7 +233,6 @@ public class ChromaticityShaderCompiler {
         addIncludePath("/assets/chromaticity/includes/");
         addIncludePath("/assets/chromaticity/shaderpacks/" + shaderpackName + "/");
 
-        LOGGER.info("Configured SPIR-V compiler include paths for shaderpack: {}", shaderpackName);
     }
 
     /**
