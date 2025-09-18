@@ -7,8 +7,12 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -19,6 +23,31 @@ import java.util.stream.Stream;
  */
 public class ShaderOptionParser {
     private static final Logger LOGGER = LoggerFactory.getLogger(ShaderOptionParser.class);
+
+    // Cache for parsed shader option sets
+    private static final Map<String, CachedShaderOptions> CACHE = new ConcurrentHashMap<>();
+
+    // Pre-compiled patterns for better performance
+    private static final Pattern OPTION_LINE_PATTERN = Pattern.compile(
+        "^\\s*(?://\\s*)?(?:#define|const)\\s+.*");
+
+    private static final Pattern DEFINE_PATTERN = Pattern.compile(
+        "#define\\s+(\\w+)(?:\\s+(\\S+))?(?:\\s*//\\s*(.*))?");
+
+    private static final Pattern CONST_PATTERN = Pattern.compile(
+        "const\\s+(int|float|bool)\\s+(\\w+)\\s*=\\s*(\\S+)\\s*;(?:\\s*//\\s*(.*))?");
+
+    private static class CachedShaderOptions {
+        final ShaderOptionSet options;
+        final long lastModified;
+        final int fileCount;
+
+        CachedShaderOptions(ShaderOptionSet options, long lastModified, int fileCount) {
+            this.options = options;
+            this.lastModified = lastModified;
+            this.fileCount = fileCount;
+        }
+    }
 
     // Shader file extensions to scan
     private static final Set<String> SHADER_EXTENSIONS = Set.of(
@@ -40,34 +69,74 @@ public class ShaderOptionParser {
 
     /**
      * Parses all shader files in a directory to discover options.
+     * Uses caching based on directory modification time for performance.
      */
     public ShaderOptionSet parseShaderDirectory(Path shaderDir) {
-        ShaderOptionSet.Builder builder = ShaderOptionSet.builder();
-
         try {
             if (!Files.exists(shaderDir)) {
                 LOGGER.warn("Shader directory does not exist: {}", shaderDir);
-                return builder.build();
+                return ShaderOptionSet.builder().build();
             }
 
+            String cacheKey = shaderDir.toAbsolutePath().toString();
+
+            // Check cache first
+            CachedShaderOptions cached = CACHE.get(cacheKey);
+            if (cached != null) {
+                // Check if directory or any shader files have been modified
+                try (Stream<Path> paths = Files.walk(shaderDir)) {
+                    long maxModTime = paths
+                        .filter(Files::isRegularFile)
+                        .filter(this::isShaderFile)
+                        .mapToLong(this::getLastModified)
+                        .max()
+                        .orElse(0L);
+
+                    if (maxModTime <= cached.lastModified) {
+                        LOGGER.debug("Using cached shader options for: {}", shaderDir);
+                        return cached.options;
+                    }
+                }
+            }
+
+            // Parse directory
+            ShaderOptionSet.Builder builder = ShaderOptionSet.builder();
+            AtomicInteger fileCount = new AtomicInteger(0);
+            long startTime = System.currentTimeMillis();
+
             try (Stream<Path> paths = Files.walk(shaderDir)) {
-                paths.filter(Files::isRegularFile)
-                     .filter(this::isShaderFile)
-                     .forEach(shaderFile -> {
-                         try {
-                             parseShaderFile(shaderFile, builder);
-                         } catch (IOException e) {
-                             LOGGER.warn("Failed to parse shader file: {}", shaderFile, e);
-                         }
-                     });
+                long maxModTime = paths
+                    .filter(Files::isRegularFile)
+                    .filter(this::isShaderFile)
+                    .peek(file -> fileCount.incrementAndGet())
+                    .mapToLong(shaderFile -> {
+                        try {
+                            parseShaderFileOptimized(shaderFile, builder);
+                            return getLastModified(shaderFile);
+                        } catch (IOException e) {
+                            LOGGER.warn("Failed to parse shader file: {}", shaderFile, e);
+                            return 0L;
+                        }
+                    })
+                    .max()
+                    .orElse(System.currentTimeMillis());
+
+                ShaderOptionSet result = builder.build();
+
+                // Cache the result
+                CACHE.put(cacheKey, new CachedShaderOptions(result, maxModTime, fileCount.get()));
+
+                long parseTime = System.currentTimeMillis() - startTime;
+                LOGGER.info("Parsed {} shader files in {}ms, found {} options in: {}",
+                    fileCount.get(), parseTime, result.getTotalOptionCount(), shaderDir.getFileName());
+
+                return result;
             }
 
         } catch (IOException e) {
             LOGGER.error("Failed to scan shader directory: {}", shaderDir, e);
+            return ShaderOptionSet.builder().build();
         }
-
-        ShaderOptionSet result = builder.build();
-        return result;
     }
 
     /**
@@ -79,55 +148,61 @@ public class ShaderOptionParser {
     }
 
     /**
-     * Parses a single shader file for options.
+     * Optimized shader file parsing using streaming and early filtering.
      */
-    private void parseShaderFile(Path file, ShaderOptionSet.Builder builder) throws IOException {
-        List<String> lines = Files.readAllLines(file);
-
-        for (int i = 0; i < lines.size(); i++) {
-            String line = lines.get(i);
-            parseLine(line, i, file, builder);
+    private void parseShaderFileOptimized(Path file, ShaderOptionSet.Builder builder) throws IOException {
+        try (Stream<String> lines = Files.lines(file)) {
+            lines
+                .filter(this::isOptionCandidate)
+                .forEach(line -> {
+                    try {
+                        parseLineOptimized(line, file, builder);
+                    } catch (Exception e) {
+                        LOGGER.debug("Failed to parse line in {}: {}", file, line, e);
+                    }
+                });
         }
     }
 
     /**
-     * Parses a single line for shader options.
+     * Quick filter to identify lines that might contain options.
+     * Avoids expensive string operations on irrelevant lines.
      */
-    private void parseLine(String line, int lineNumber, Path file, ShaderOptionSet.Builder builder) {
+    private boolean isOptionCandidate(String line) {
+        // Quick length and character checks before expensive operations
+        if (line.length() < 5) return false;
+
+        // Check for option keywords efficiently
+        return line.contains("#define") || line.contains("const");
+    }
+
+    /**
+     * Optimized line parsing using pre-compiled patterns.
+     */
+    private void parseLineOptimized(String line, Path file, ShaderOptionSet.Builder builder) {
         String trimmed = line.trim();
 
-        // Skip empty lines and non-relevant lines
-        if (trimmed.isEmpty() ||
-            (!trimmed.contains("#define") && !trimmed.contains("const"))) {
+        if (trimmed.isEmpty() || !OPTION_LINE_PATTERN.matcher(trimmed).matches()) {
+            return;
         }
 
-        try {
-            if (trimmed.contains("#define")) {
-                parseDefineOption(trimmed, lineNumber, file, builder);
-            } else if (trimmed.startsWith("const")) {
-                parseConstOption(trimmed, lineNumber, file, builder);
-            }
-        } catch (Exception e) {
-            LOGGER.debug("Failed to parse line {} in {}: {}", lineNumber + 1, file, line, e);
+        if (trimmed.contains("#define")) {
+            parseDefineOptionOptimized(trimmed, file, builder);
+        } else if (trimmed.startsWith("const")) {
+            parseConstOptionOptimized(trimmed, file, builder);
         }
     }
 
     /**
-     * Parses #define option lines.
-     * Supports:
-     * - #define OPTION_NAME           (boolean, default true)
-     * - //#define OPTION_NAME          (boolean, default false)
-     * - #define OPTION_NAME value // [values] labels
+     * Optimized #define option parsing using pre-compiled patterns.
      */
-    private void parseDefineOption(String line, int lineNumber, Path file, ShaderOptionSet.Builder builder) {
-        boolean isCommented = line.trim().startsWith("//");
-        String workingLine = isCommented ? line.trim().substring(2).trim() : line.trim();
+    private void parseDefineOptionOptimized(String line, Path file, ShaderOptionSet.Builder builder) {
+        boolean isCommented = line.startsWith("//");
+        String workingLine = isCommented ? line.substring(2).trim() : line;
 
-        // Pattern: #define OPTION_NAME [value] [// comment]
-        Pattern definePattern = Pattern.compile("#define\\s+(\\w+)(?:\\s+(\\S+))?(?:\\s*//\\s*(.*))?");
-        Matcher matcher = definePattern.matcher(workingLine);
-
+        Matcher matcher = DEFINE_PATTERN.matcher(workingLine);
         if (!matcher.matches()) {
+            return;
         }
 
         String optionName = matcher.group(1);
@@ -144,7 +219,7 @@ public class ShaderOptionParser {
             LOGGER.debug("Found boolean define option: {} = {} in {}", optionName, defaultValue, file.getFileName());
 
         } else {
-            // String option - check for allowed values in comment
+            // String option
             StringShaderOption option = StringShaderOption.create(
                 optionName, comment, ShaderOption.OptionType.DEFINE, value);
 
@@ -156,18 +231,12 @@ public class ShaderOptionParser {
     }
 
     /**
-     * Parses const option lines.
-     * Supports:
-     * - const int optionName = value;
-     * - const float optionName = value;
-     * - const bool optionName = value;
+     * Optimized const option parsing using pre-compiled patterns.
      */
-    private void parseConstOption(String line, int lineNumber, Path file, ShaderOptionSet.Builder builder) {
-        // Pattern: const type name = value; [// comment]
-        Pattern constPattern = Pattern.compile("const\\s+(int|float|bool)\\s+(\\w+)\\s*=\\s*(\\S+)\\s*;(?:\\s*//\\s*(.*))?");
-        Matcher matcher = constPattern.matcher(line);
-
+    private void parseConstOptionOptimized(String line, Path file, ShaderOptionSet.Builder builder) {
+        Matcher matcher = CONST_PATTERN.matcher(line);
         if (!matcher.matches()) {
+            return;
         }
 
         String type = matcher.group(1);
@@ -177,6 +246,7 @@ public class ShaderOptionParser {
 
         // Only process known const option names for compatibility
         if (!VALID_CONST_OPTION_NAMES.contains(optionName)) {
+            return;
         }
 
         if ("bool".equals(type)) {
@@ -198,5 +268,24 @@ public class ShaderOptionParser {
                 LOGGER.debug("Found numeric const option: {} = {} in {}", optionName, value, file.getFileName());
             }
         }
+    }
+
+    /**
+     * Gets the last modified time of a file safely.
+     */
+    private long getLastModified(Path file) {
+        try {
+            return Files.getLastModifiedTime(file).toMillis();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * Clears the parsing cache. Useful for development/testing.
+     */
+    public static void clearCache() {
+        CACHE.clear();
+        LOGGER.debug("Cleared shader option parser cache");
     }
 }

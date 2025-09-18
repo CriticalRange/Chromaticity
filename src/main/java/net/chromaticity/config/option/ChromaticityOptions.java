@@ -112,20 +112,4 @@ public class ChromaticityOptions {
         System.out.println("Chromaticity: Shader pack cache cleared and configurations reloaded");
     }
 
-    // Legacy compatibility methods for any existing references
-    @Deprecated
-    public static List<Object> getShaderPacksOpts() {
-        List<Object> options = new ArrayList<>();
-        List<String> packs = getAvailableShaderPacks();
-
-        for (String pack : packs) {
-            options.add("Shader Pack: " + pack + (hasShaderPackSettings(pack) ? " (Settings Available)" : ""));
-        }
-
-        if (options.isEmpty()) {
-            options.add("No shader packs found");
-        }
-
-        return options;
-    }
 }

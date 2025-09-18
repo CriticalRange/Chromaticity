@@ -6,14 +6,13 @@ import net.chromaticity.shader.config.ShaderPackConfig;
 import net.chromaticity.shader.option.ShaderOptionSet;
 import net.chromaticity.shader.option.ShaderOptionValues;
 import net.chromaticity.shader.parser.ShaderOptionParser;
-import net.chromaticity.shader.preprocessing.ShaderTranslationService;
-import net.chromaticity.shader.preprocessing.VulkanModIntegration;
-import net.chromaticity.shader.preprocessing.ShaderChangeTracker;
-import net.chromaticity.shader.compilation.ShaderCompilationService;
+// Note: All preprocessing removed - using pure LWJGL Shaderc
+import net.chromaticity.shader.compilation.ShadercCompiler;
 import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -29,7 +28,7 @@ import java.util.zip.ZipFile;
 
 /**
  * Manages shader pack discovery, extraction, and caching.
- * Handles the cache structure with original/, updated/, spir-v/, and shaderpack_settings.json.
+ * Handles the cache structure with original/, spir-v/, and shaderpack_settings.json.
  */
 public class ShaderPackManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(ShaderPackManager.class);
@@ -39,8 +38,7 @@ public class ShaderPackManager {
     private final Path cacheDirectory;
     private final Map<String, ShaderPackInfo> loadedPacks = new ConcurrentHashMap<>();
     private final ShaderOptionParser optionParser = new ShaderOptionParser();
-    private final ShaderTranslationService translationService = new ShaderTranslationService();
-    private final ShaderCompilationService compilationService = new ShaderCompilationService(translationService);
+    // Note: No translation service needed - using pure LWJGL Shaderc
 
     public ShaderPackManager() {
         this.shaderpacksDirectory = getShaderpacksDirectory();
@@ -133,7 +131,7 @@ public class ShaderPackManager {
             // Ensure cache directories exist
             Files.createDirectories(packCacheDir);
             Files.createDirectories(packCacheDir.resolve("original"));
-            // Note: updated/ and spir-v/ folders will be created later during apply/processing
+            // Note: spir-v/ folder will be created later during apply/processing
 
             LOGGER.debug("Created cache directories for pack: {}", packName);
 
@@ -404,7 +402,7 @@ public class ShaderPackManager {
 
     /**
      * Processes/applies a shader pack (when user clicks Apply button).
-     * Creates updated/ and spir-v/ folders and triggers shader compilation.
+     * Creates spir-v/ folder and triggers shader compilation directly from original files.
      */
     public void processShaderPack(String packName) {
         try {
@@ -427,10 +425,8 @@ public class ShaderPackManager {
 
             Path packCacheDir = cacheDirectory.resolve(packName);
             Path originalDir = packCacheDir.resolve("original");
-            Path updatedDir = packCacheDir.resolve("updated");
 
-            // Create processing directories if they don't exist
-            Files.createDirectories(updatedDir);
+            // Note: No updated/ directory needed - working directly with original files
 
 
             // Phase 1: Shader preprocessing and translation
@@ -448,25 +444,25 @@ public class ShaderPackManager {
             // Debug: Check what files exist in the shaders directory
             logDirectoryContents(shadersDir, "Shaders directory contents");
 
-            // Translate all shaders from OpenGL to Vulkan GLSL
-            // Save to updated/ folder first for tracking changes, then copy to compiled/
-            Path updatedShadersDir = updatedDir.resolve("shaders");
-            Files.createDirectories(updatedShadersDir);
-            translationService.translateShaderDirectory(shadersDir, updatedShadersDir, currentSettings);
+            // No preprocessing needed - DirectShaderCompiler handles everything directly from original files
 
-            // Copy non-shader files (textures, properties, etc.) to updated/ maintaining structure
-            copyNonShaderFiles(originalDir, updatedDir);
+            // Note: No file copying needed - working directly with original files
 
-            // Phase 2: Generate change tracking report
-            generateChangeReport(packName, originalDir, updatedDir, packCacheDir);
+            // Phase 2: Generate change tracking report (skipped - no updated files)
+            // generateChangeReport(packName, originalDir, updatedDir, packCacheDir);
 
-            // Phase 3: SPIR-V Compilation (GLSL 450 core → SPIR-V bytecode)
+            // Phase 3: Preprocessing for debugging (GLSL with includes resolved)
+            Path preprocessedDir = packCacheDir.resolve("preprocessed");
+            Files.createDirectories(preprocessedDir);
+            preprocessShaders(packName, shadersDir, preprocessedDir);
+
+            // Phase 4: SPIR-V Compilation (GLSL 450 core → SPIR-V bytecode)
             Path spirvDir = packCacheDir.resolve("spir-v");
             Files.createDirectories(spirvDir);
-            compileToSpirv(packName, updatedShadersDir, spirvDir);
+            compileToSpirv(packName, shadersDir, spirvDir);
 
-            // Phase 4: Add VulkanMod include paths for runtime integration
-            addVulkanModIncludePaths(packName, updatedDir);
+            // Phase 5: Add VulkanMod include paths for runtime integration
+            addVulkanModIncludePaths(packName, originalDir);
 
 
         } catch (IOException e) {
@@ -475,28 +471,94 @@ public class ShaderPackManager {
     }
 
     /**
-     * Compiles preprocessed GLSL 450 core shaders to SPIR-V bytecode.
+     * Preprocess shaders to debug includes and see final GLSL before compilation.
      */
-    private void compileToSpirv(String packName, Path updatedShadersDir, Path spirvDir) {
+    private void preprocessShaders(String packName, Path originalShadersDir, Path preprocessedDir) {
         try {
+            LOGGER.info("Preprocessing shaders for debugging: {}", packName);
 
-            // Use the compilation service to compile all preprocessed shaders
-            ShaderCompilationService.CompilationSession session = compilationService.compileShaderpackToSpirv(
-                packName, updatedShadersDir, spirvDir
-            );
+            // Initialize Shaderc compiler
+            ShadercCompiler.initialize();
+            ShadercCompiler.setShaderPackRoot(originalShadersDir);
 
-            // Log compilation results
+            // Set compilation mode to debug for better error messages
+            ShadercCompiler.setCompilationMode(ShadercCompiler.CompilationMode.DEBUG);
 
-            // Generate compilation statistics
-            ShaderCompilationService.CompilationStatistics stats = compilationService.getCompilationStatistics();
-            LOGGER.debug("Compilation statistics: {}", stats);
+            // Preprocess all shaders
+            ShadercCompiler.preprocessShadersInDirectory(originalShadersDir, preprocessedDir);
 
-        } catch (UnsupportedOperationException e) {
-            LOGGER.warn("SPIR-V compilation not available (VulkanMod not found): {}", e.getMessage());
+            LOGGER.info("Completed shader preprocessing for: {}", packName);
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to preprocess shaders for pack: {}", packName, e);
+        }
+    }
+
+    /**
+     * Compiles shaders to SPIR-V bytecode using ShadercCompiler.
+     */
+    private void compileToSpirv(String packName, Path originalShadersDir, Path spirvDir) {
+        try {
+            // Initialize Shaderc compiler
+            ShadercCompiler.initialize();
+            ShadercCompiler.setShaderPackRoot(originalShadersDir);
+
+            // Find all shader files
+            List<Path> shaderFiles = findShaderFiles(originalShadersDir);
+            LOGGER.info("Found {} shader files to compile for pack: {}", shaderFiles.size(), packName);
+
+            int compiledCount = 0;
+            for (Path shaderFile : shaderFiles) {
+                try {
+                    // Read shader source
+                    String shaderSource = Files.readString(shaderFile);
+                    String filename = shaderFile.getFileName().toString();
+                    ShadercCompiler.ShaderStage stage = ShadercCompiler.ShaderStage.fromFileName(filename);
+
+                    // Compile to SPIR-V
+                    ShadercCompiler.CompilationResult result = ShadercCompiler.compileShader(filename, shaderSource, stage);
+
+                    // Calculate output path
+                    Path relativePath = originalShadersDir.relativize(shaderFile);
+                    Path spirvOutputPath = spirvDir.resolve(relativePath.toString() + ".spv");
+
+                    // Create output directory
+                    Files.createDirectories(spirvOutputPath.getParent());
+
+                    // Save SPIR-V bytecode
+                    Files.write(spirvOutputPath, result.getSpirvBytecode());
+
+                    compiledCount++;
+                    LOGGER.debug("Compiled shader [{}/{}]: {} -> {}",
+                        compiledCount, shaderFiles.size(),
+                        shaderFile.getFileName(), spirvOutputPath.getFileName());
+
+                } catch (Exception e) {
+                    LOGGER.error("Failed to compile shader: {}", shaderFile, e);
+                }
+            }
+
+            LOGGER.info("Successfully compiled {} shaders for pack: {}", compiledCount, packName);
 
         } catch (Exception e) {
             LOGGER.error("Failed to compile shader pack '{}' to SPIR-V", packName, e);
             throw new RuntimeException("SPIR-V compilation failed for: " + packName, e);
+        }
+    }
+
+    /**
+     * Finds all shader files recursively in a directory.
+     */
+    private List<Path> findShaderFiles(Path directory) throws IOException {
+        if (!Files.exists(directory)) {
+            return Collections.emptyList();
+        }
+
+        try (Stream<Path> paths = Files.walk(directory)) {
+            return paths
+                .filter(Files::isRegularFile)
+                .filter(this::isShaderFile)
+                .collect(Collectors.toList());
         }
     }
 
@@ -506,11 +568,9 @@ public class ShaderPackManager {
     private void addVulkanModIncludePaths(String packName, Path compiledDir) {
         try {
             // Add shaderpack-specific include paths to VulkanMod's system
-            // This allows #include directives to work properly during SPIR-V compilation
-            VulkanModIntegration.addShaderPackIncludePaths(packName);
+            // Note: Include paths handled by DirectShaderCompiler include callbacks
 
-            LOGGER.debug("Configured include paths for shader pack: {} - Integration status: {}",
-                packName, VulkanModIntegration.getIntegrationStatus());
+            LOGGER.debug("Configured include paths for shader pack: {} - Integration status: Direct Shaderc", packName);
 
         } catch (Exception e) {
             LOGGER.warn("Failed to configure include paths for pack: {}", packName, e);
@@ -536,24 +596,6 @@ public class ShaderPackManager {
         }
     }
 
-    /**
-     * Generates a change tracking report for the preprocessing operation.
-     */
-    private void generateChangeReport(String packName, Path originalDir, Path updatedDir, Path cacheDir) {
-        try {
-            LOGGER.debug("Generating change report for shader pack: {}", packName);
-
-            // Analyze changes between original and updated directories
-            ShaderChangeTracker.ChangeReport report = ShaderChangeTracker.analyzeChanges(originalDir, updatedDir, packName);
-
-            // Save the report to cache directory
-            ShaderChangeTracker.saveChangeReport(report, cacheDir);
-
-
-        } catch (Exception e) {
-            LOGGER.error("Failed to generate change report for pack: {}", packName, e);
-        }
-    }
 
     /**
      * Copies non-shader files from original to updated directory maintaining structure.
@@ -636,13 +678,6 @@ public class ShaderPackManager {
         }
     }
 
-    /**
-     * Gets the preprocessing change report for a shader pack.
-     */
-    public ShaderChangeTracker.ChangeReport getChangeReport(String packName) {
-        Path cacheDir = cacheDirectory.resolve(packName);
-        return ShaderChangeTracker.loadChangeReport(cacheDir);
-    }
 
     /**
      * Information about a loaded shader pack.
@@ -672,9 +707,14 @@ public class ShaderPackManager {
             return cacheDirectory.resolve("original");
         }
 
-        public Path getUpdatedDirectory() {
-            return cacheDirectory.resolve("updated");
+        public Path getPreprocessedDirectory() {
+            return cacheDirectory.resolve("preprocessed");
         }
+
+        // Note: Updated directory no longer used - working directly with original files
+        // public Path getUpdatedDirectory() {
+        //     return cacheDirectory.resolve("updated");
+        // }
 
         public Path getSpirvDirectory() {
             return cacheDirectory.resolve("spir-v");
@@ -686,6 +726,46 @@ public class ShaderPackManager {
 
         public ShaderOptionValues getSettings() {
             return settings;
+        }
+    }
+
+    /**
+     * Force preprocessing of a specific shader pack for debugging.
+     */
+    public void forcePreprocessShaderPack(String packName) {
+        try {
+            ShaderPackInfo packInfo = loadedPacks.get(packName);
+            if (packInfo == null) {
+                LOGGER.warn("Shader pack '{}' not loaded for preprocessing", packName);
+                return;
+            }
+
+            Path packCacheDir = cacheDirectory.resolve(packName);
+            Path originalDir = packCacheDir.resolve("original");
+            Path preprocessedDir = packCacheDir.resolve("preprocessed");
+
+            // Find shaders directory
+            Path shadersDir = originalDir.resolve("shaders");
+            if (!Files.exists(shadersDir)) {
+                shadersDir = originalDir;
+            }
+
+            // Clean and recreate preprocessed directory
+            if (Files.exists(preprocessedDir)) {
+                Files.walk(preprocessedDir)
+                     .sorted(java.util.Comparator.reverseOrder())
+                     .map(Path::toFile)
+                     .forEach(File::delete);
+            }
+            Files.createDirectories(preprocessedDir);
+
+            // Preprocess shaders
+            preprocessShaders(packName, shadersDir, preprocessedDir);
+
+            LOGGER.info("Force preprocessing completed for: {}", packName);
+
+        } catch (IOException e) {
+            LOGGER.error("Failed to force preprocess shader pack: {}", packName, e);
         }
     }
 }
